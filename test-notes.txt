@@ -1,0 +1,1 @@
+The root cause of NN-2725 was a memory leak in the database connection pool. The fix was to properly close connections after each request by calling pool.release() in the finally block. This was deployed in version 2.4.1 on March 3rd 2025.
