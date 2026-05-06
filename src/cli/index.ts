@@ -9,12 +9,9 @@ import { createSQLiteVectorStore } from '../vectorstore/sqlite';
 import { ParserRegistry } from '../ingestion/parsers';
 import { runIngestion } from '../ingestion/ingestionEngine';
 import { askQuestion } from '../query/engine';
+import { resolveProvider } from '../llm';
 
 const DB_PATH = path.join(process.cwd(), '.mykb', 'index.db');
-
-function getAnthropicKey(): string | null {
-  return process.env.ANTHROPIC_API_KEY ?? null;
-}
 
 function dbExists(): boolean {
   if (!fs.existsSync(DB_PATH)) {
@@ -51,16 +48,23 @@ async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Pr
 
 async function handleAsk(question: string): Promise<void> {
   if (!dbExists()) return;
-  const apiKey = getAnthropicKey();
-  if (!apiKey) {
-    console.error('Error: ANTHROPIC_API_KEY is not set in .env');
+
+  let provider: Awaited<ReturnType<typeof resolveProvider>>;
+  try {
+    provider = await resolveProvider();
+  } catch (err) {
+    console.error((err as Error).message);
     return;
   }
+
+  console.log(`Provider : ${provider.name}`);
+
   const embedder = createLocalEmbeddingProvider();
   const store = createSQLiteVectorStore(DB_PATH);
+
   console.log(`\nQ: ${question}\n`);
   console.log('A:');
-  await askQuestion(question, embedder, store, apiKey);
+  await askQuestion(question, embedder, store, provider.provider);
   console.log();
 }
 
@@ -88,7 +92,6 @@ function printHelp(): void {
 `);
 }
 
-/** Minimal shell-like arg parser: respects single and double quotes. */
 function parseArgs(input: string): string[] {
   const args: string[] = [];
   let current = '';
@@ -212,7 +215,6 @@ program
     await handleStats();
   });
 
-// No args → interactive mode; args provided → one-shot commander mode
 if (process.argv.length <= 2) {
   runInteractive();
 } else {

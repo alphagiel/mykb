@@ -35,6 +35,10 @@ export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
 }
 
+export interface LLMProvider {
+  answer(question: string, context: string): Promise<void>;
+}
+
 export interface VectorStore {
   addDocument(filePath: string, contentHash: string): Promise<number>;
   documentExists(filePath: string, contentHash: string): Promise<boolean>;
