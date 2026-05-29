@@ -1,10 +1,10 @@
 {
-  "name": "mykb",
+  "name": "myworkjournal",
   "version": "0.1.0",
-  "description": "Local RAG knowledge base CLI",
+  "description": "A searchable work journal powered by local RAG",
   "main": "dist/cli/index.js",
   "bin": {
-    "mykb": "./dist/cli/index.js"
+    "mywj": "./dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc",

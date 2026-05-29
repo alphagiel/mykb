@@ -11,7 +11,7 @@ import { runIngestion } from '../ingestion/ingestionEngine';
 import { askQuestion } from '../query/engine';
 import { resolveProvider } from '../llm';
 
-const DB_PATH = path.join(process.cwd(), '.mykb', 'index.db');
+const DB_PATH = path.join(process.cwd(), '.myworkjournal', 'index.db');
 
 function dbExists(): boolean {
   if (!fs.existsSync(DB_PATH)) {
@@ -57,15 +57,17 @@ async function handleAsk(question: string, topK = 5): Promise<void> {
     return;
   }
 
-  console.log(`Provider : ${provider.name}`);
-  console.log(`Sources  : ${topK} chunks (higher = more context, more tokens)`);
-
   const embedder = createLocalEmbeddingProvider();
   const store = createSQLiteVectorStore(DB_PATH);
 
+  // Embed before printing so model-load logs don't interrupt the output
+  const queryEmbedding = await embedder.embed(question);
+
+  console.log(`Provider : ${provider.name}`);
+  console.log(`Sources  : ${topK} chunks (higher = more context, more tokens)`);
   console.log(`\nQ: ${question}\n`);
   console.log('A:');
-  const usage = await askQuestion(question, embedder, store, provider.provider, topK);
+  const usage = await askQuestion(question, embedder, store, provider.provider, topK, queryEmbedding);
 
   console.log();
   console.log('─'.repeat(50));
@@ -75,6 +77,7 @@ async function handleAsk(question: string, topK = 5): Promise<void> {
     const fmt = (n: number) => n.toLocaleString('en-US');
     console.log(`Tokens      ${fmt(usage.inputTokens)} in · ${fmt(usage.outputTokens)} out`);
   }
+  console.log(`Tip         use -k <n> to retrieve more context (current: ${topK})`);
   console.log('─'.repeat(50));
 }
 
@@ -126,13 +129,13 @@ function parseArgs(input: string): string[] {
 }
 
 async function runInteractive(): Promise<void> {
-  console.log('mykb — local knowledge base');
+  console.log('myworkjournal — searchable work journal');
   console.log('Type "help" for commands, "exit" to quit.\n');
 
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: 'mykb> ',
+    prompt: 'mywj> ',
   });
 
   rl.prompt();
@@ -201,8 +204,8 @@ async function runInteractive(): Promise<void> {
 const program = new Command();
 
 program
-  .name('mykb')
-  .description('Local RAG knowledge base CLI')
+  .name('mywj')
+  .description('A searchable work journal powered by local RAG')
   .version('0.1.0');
 
 program
