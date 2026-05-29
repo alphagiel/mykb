@@ -1,6 +1,18 @@
 # mykb
 
-A local RAG (Retrieval Augmented Generation) CLI tool. Ingest knowledge files into a per-project SQLite vector store and ask natural language questions over them using Claude.
+A searchable work journal powered by local RAG (Retrieval Augmented Generation).
+
+Point it at your tickets, notes, or exports and ask natural language questions over your own work history — instantly surface what you built, why you built it, and what broke along the way.
+
+```bash
+ask "What auth issues did we have in Q1?"
+ask "When did we first run into the memory leak problem?"
+ask "What was the fix for NN-2725?"
+```
+
+As you keep adding tickets over time, the value compounds. A year from now you'll have a fully queryable record of everything you've worked on.
+
+Technically: ingests `.txt`, `.md`, and `.rtf` files into a local SQLite vector store, retrieves the most relevant chunks via cosine similarity, and streams the answer from your LLM of choice (Claude, OpenAI, or Ollama).
 
 ## Requirements
 

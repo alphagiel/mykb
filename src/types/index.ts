@@ -35,8 +35,18 @@ export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
 }
 
+export interface UsageStats {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface LLMProvider {
-  answer(question: string, context: string): Promise<void>;
+  answer(question: string, context: string): Promise<UsageStats>;
+}
+
+export interface ConversationTurn {
+  question: string;
+  answer: string;
 }
 
 export interface VectorStore {

@@ -65,8 +65,17 @@ async function handleAsk(question: string, topK = 5): Promise<void> {
 
   console.log(`\nQ: ${question}\n`);
   console.log('A:');
-  await askQuestion(question, embedder, store, provider.provider, topK);
+  const usage = await askQuestion(question, embedder, store, provider.provider, topK);
+
   console.log();
+  console.log('─'.repeat(50));
+  console.log(`Embeddings  all-MiniLM-L6-v2 (local)`);
+  console.log(`LLM         ${provider.name}`);
+  if (usage) {
+    const fmt = (n: number) => n.toLocaleString('en-US');
+    console.log(`Tokens      ${fmt(usage.inputTokens)} in · ${fmt(usage.outputTokens)} out`);
+  }
+  console.log('─'.repeat(50));
 }
 
 async function handleStats(): Promise<void> {

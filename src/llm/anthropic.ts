@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { LLMProvider } from '../types';
+import { LLMProvider, UsageStats } from '../types';
 
 const MODEL = 'claude-opus-4-6';
 const SYSTEM = `You are a helpful assistant answering questions from a private knowledge base.
@@ -10,7 +10,7 @@ export function createAnthropicProvider(apiKey: string): LLMProvider {
   const client = new Anthropic({ apiKey });
 
   return {
-    async answer(question: string, context: string): Promise<void> {
+    async answer(question: string, context: string): Promise<UsageStats> {
       const stream = client.messages.stream({
         model: MODEL,
         max_tokens: 4096,
@@ -21,8 +21,13 @@ export function createAnthropicProvider(apiKey: string): LLMProvider {
       });
 
       stream.on('text', (delta) => process.stdout.write(delta));
-      await stream.finalMessage();
+      const final = await stream.finalMessage();
       process.stdout.write('\n');
+
+      return {
+        inputTokens: final.usage.input_tokens,
+        outputTokens: final.usage.output_tokens,
+      };
     },
   };
 }

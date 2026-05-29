@@ -1,7 +1,7 @@
 import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';
-import { LLMProvider } from '../types';
+import { LLMProvider, UsageStats } from '../types';
 
 const SYSTEM = `You are a helpful assistant answering questions from a private knowledge base.
 Use only the provided context. If the answer is not there, say so clearly. Be concise.
@@ -11,7 +11,7 @@ export function createOllamaProvider(model: string): LLMProvider {
   const baseUrl = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 
   return {
-    async answer(question: string, context: string): Promise<void> {
+    async answer(question: string, context: string): Promise<UsageStats> {
       const prompt = `${SYSTEM}\n\nContext:\n${context}\n\nQuestion: ${question}`;
       const body = JSON.stringify({ model, prompt, stream: true });
 
@@ -37,6 +37,9 @@ export function createOllamaProvider(model: string): LLMProvider {
             }
 
             let buffer = '';
+            let inputTokens = 0;
+            let outputTokens = 0;
+
             res.on('data', (chunk: Buffer) => {
               buffer += chunk.toString();
               const lines = buffer.split('\n');
@@ -44,8 +47,17 @@ export function createOllamaProvider(model: string): LLMProvider {
               for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
-                  const data = JSON.parse(line) as { response?: string };
+                  const data = JSON.parse(line) as {
+                    response?: string;
+                    done?: boolean;
+                    prompt_eval_count?: number;
+                    eval_count?: number;
+                  };
                   if (data.response) process.stdout.write(data.response);
+                  if (data.done) {
+                    inputTokens = data.prompt_eval_count ?? 0;
+                    outputTokens = data.eval_count ?? 0;
+                  }
                 } catch {
                   // ignore malformed lines
                 }
@@ -54,7 +66,7 @@ export function createOllamaProvider(model: string): LLMProvider {
 
             res.on('end', () => {
               process.stdout.write('\n');
-              resolve();
+              resolve({ inputTokens, outputTokens });
             });
 
             res.on('error', reject);
