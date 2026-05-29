@@ -46,7 +46,7 @@ async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Pr
   console.log(`  Failed  : ${result.failed}`);
 }
 
-async function handleAsk(question: string): Promise<void> {
+async function handleAsk(question: string, topK = 5): Promise<void> {
   if (!dbExists()) return;
 
   let provider: Awaited<ReturnType<typeof resolveProvider>>;
@@ -58,13 +58,14 @@ async function handleAsk(question: string): Promise<void> {
   }
 
   console.log(`Provider : ${provider.name}`);
+  console.log(`Sources  : ${topK} chunks (higher = more context, more tokens)`);
 
   const embedder = createLocalEmbeddingProvider();
   const store = createSQLiteVectorStore(DB_PATH);
 
   console.log(`\nQ: ${question}\n`);
   console.log('A:');
-  await askQuestion(question, embedder, store, provider.provider);
+  await askQuestion(question, embedder, store, provider.provider, topK);
   console.log();
 }
 
@@ -85,7 +86,7 @@ async function handleStats(): Promise<void> {
 function printHelp(): void {
   console.log(`
   ingest <path> [-e .txt,.md,.rtf]   Ingest files from a directory into the knowledge base
-  ask <question>                      Ask a question against the knowledge base
+  ask <question> [-k N]               Ask a question (default -k 5; higher = more context, more tokens)
   stats                               Show knowledge base statistics
   help                                Show this help message
   exit                                Exit mykb
@@ -156,9 +157,11 @@ async function runInteractive(): Promise<void> {
           break;
         }
         case 'ask': {
-          const question = rest.join(' ');
-          if (!question) { console.error('Usage: ask <question>'); break; }
-          await handleAsk(question);
+          const kFlag = rest.indexOf('-k');
+          const topK = kFlag !== -1 && rest[kFlag + 1] ? parseInt(rest[kFlag + 1], 10) : 5;
+          const question = rest.filter((_, i) => i !== kFlag && i !== kFlag + 1).join(' ');
+          if (!question) { console.error('Usage: ask <question> [-k N]'); break; }
+          await handleAsk(question, topK);
           break;
         }
         case 'stats':
@@ -204,8 +207,9 @@ program
 program
   .command('ask <question>')
   .description('Ask a question against the knowledge base')
-  .action(async (question: string) => {
-    await handleAsk(question);
+  .option('-k, --top-k <n>', 'Number of source chunks to retrieve (more = richer context but higher token cost)', '5')
+  .action(async (question: string, options: { topK: string }) => {
+    await handleAsk(question, parseInt(options.topK, 10));
   });
 
 program

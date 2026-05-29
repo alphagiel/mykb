@@ -1,15 +1,14 @@
 import { EmbeddingProvider, LLMProvider, VectorStore } from '../types';
 
-const TOP_K = 7;
-
 export async function askQuestion(
   question: string,
   embedder: EmbeddingProvider,
   store: VectorStore,
-  llm: LLMProvider
+  llm: LLMProvider,
+  topK = 5
 ): Promise<void> {
   const queryEmbedding = await embedder.embed(question);
-  const chunks = await store.similaritySearch(queryEmbedding, TOP_K);
+  const chunks = await store.similaritySearch(queryEmbedding, topK);
 
   if (chunks.length === 0) {
     console.log('No relevant information found. Run `ingest <path>` to populate the knowledge base.');
@@ -21,4 +20,7 @@ export async function askQuestion(
     .join('\n\n---\n\n');
 
   await llm.answer(question, context);
+
+  console.log('\nSources:');
+  chunks.forEach((c, i) => console.log(`  [${i + 1}] ${c.filePath}`));
 }
