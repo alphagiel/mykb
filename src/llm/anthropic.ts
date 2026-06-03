@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { LLMProvider, UsageStats } from '../types';
+import { ConversationTurn, LLMProvider, UsageStats } from '../types';
 
 const MODEL = 'claude-opus-4-6';
 const SYSTEM = `You are a helpful assistant answering questions from a private knowledge base.
@@ -10,23 +10,25 @@ export function createAnthropicProvider(apiKey: string): LLMProvider {
   const client = new Anthropic({ apiKey });
 
   return {
-    async answer(question: string, context: string): Promise<UsageStats> {
-      const stream = client.messages.stream({
-        model: MODEL,
-        max_tokens: 4096,
-        system: SYSTEM,
-        messages: [
-          { role: 'user', content: `Context:\n${context}\n\nQuestion: ${question}` },
-        ],
-      });
+    async answer(question: string, context: string, history: ConversationTurn[] = []): Promise<UsageStats> {
+      const messages: Anthropic.MessageParam[] = [];
 
-      stream.on('text', (delta) => process.stdout.write(delta));
+      for (const turn of history) {
+        messages.push({ role: 'user', content: `Question: ${turn.question}` });
+        messages.push({ role: 'assistant', content: turn.answer });
+      }
+      messages.push({ role: 'user', content: `Context:\n${context}\n\nQuestion: ${question}` });
+
+      let answerText = '';
+      const stream = client.messages.stream({ model: MODEL, max_tokens: 4096, system: SYSTEM, messages });
+      stream.on('text', (delta) => { process.stdout.write(delta); answerText += delta; });
       const final = await stream.finalMessage();
       process.stdout.write('\n');
 
       return {
         inputTokens: final.usage.input_tokens,
         outputTokens: final.usage.output_tokens,
+        answerText,
       };
     },
   };

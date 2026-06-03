@@ -1,4 +1,5 @@
-import { EmbeddingProvider, VectorStore } from '../types';
+import * as fs from 'fs';
+import { EmbeddingProvider, FileMetadata, VectorStore } from '../types';
 import { ParserRegistry } from './parsers';
 import { scan, ScanOptions } from './scanner';
 import { normalize } from './normalizer';
@@ -40,7 +41,13 @@ export async function runIngestion(
       // Remove stale version (if any) before re-inserting
       await store.deleteDocument(file.path);
 
-      const documentId = await store.addDocument(file.path, doc.metadata.contentHash);
+      const stat = fs.statSync(file.path);
+      const meta: FileMetadata = {
+        createdAt:  stat.birthtime,
+        modifiedAt: stat.mtime,
+        sizeBytes:  stat.size,
+      };
+      const documentId = await store.addDocument(file.path, doc.metadata.contentHash, meta);
       const chunks = chunkDocument(doc.content, documentId);
 
       for (const chunk of chunks) {

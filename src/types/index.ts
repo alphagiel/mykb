@@ -19,11 +19,19 @@ export interface Chunk {
   chunkIndex: number;
 }
 
+export interface FileMetadata {
+  createdAt: Date;
+  modifiedAt: Date;
+  sizeBytes: number;
+}
+
 export interface SearchResult {
   content: string;
   filePath: string;
   chunkIndex: number;
   similarity: number;
+  fileCreatedAt?: Date;
+  fileModifiedAt?: Date;
 }
 
 export interface Parser {
@@ -38,10 +46,7 @@ export interface EmbeddingProvider {
 export interface UsageStats {
   inputTokens: number;
   outputTokens: number;
-}
-
-export interface LLMProvider {
-  answer(question: string, context: string): Promise<UsageStats>;
+  answerText?: string;
 }
 
 export interface ConversationTurn {
@@ -49,8 +54,12 @@ export interface ConversationTurn {
   answer: string;
 }
 
+export interface LLMProvider {
+  answer(question: string, context: string, history?: ConversationTurn[]): Promise<UsageStats>;
+}
+
 export interface VectorStore {
-  addDocument(filePath: string, contentHash: string): Promise<number>;
+  addDocument(filePath: string, contentHash: string, meta?: FileMetadata): Promise<number>;
   documentExists(filePath: string, contentHash: string): Promise<boolean>;
   addChunk(documentId: number, content: string, embedding: number[], chunkIndex: number): Promise<void>;
   deleteDocument(filePath: string): Promise<void>;

@@ -1,7 +1,7 @@
 import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';
-import { LLMProvider, UsageStats } from '../types';
+import { ConversationTurn, LLMProvider, UsageStats } from '../types';
 
 const SYSTEM = `You are a helpful assistant answering questions from a private knowledge base.
 Use only the provided context. If the answer is not there, say so clearly. Be concise.
@@ -11,8 +11,11 @@ export function createOllamaProvider(model: string): LLMProvider {
   const baseUrl = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 
   return {
-    async answer(question: string, context: string): Promise<UsageStats> {
-      const prompt = `${SYSTEM}\n\nContext:\n${context}\n\nQuestion: ${question}`;
+    async answer(question: string, context: string, history: ConversationTurn[] = []): Promise<UsageStats> {
+      const historyBlock = history.length
+        ? '\n\nPrevious conversation:\n' + history.map(t => `Q: ${t.question}\nA: ${t.answer}`).join('\n\n')
+        : '';
+      const prompt = `${SYSTEM}${historyBlock}\n\nContext:\n${context}\n\nQuestion: ${question}`;
       const body = JSON.stringify({ model, prompt, stream: true });
 
       return new Promise((resolve, reject) => {
@@ -39,6 +42,7 @@ export function createOllamaProvider(model: string): LLMProvider {
             let buffer = '';
             let inputTokens = 0;
             let outputTokens = 0;
+            let answerText = '';
 
             res.on('data', (chunk: Buffer) => {
               buffer += chunk.toString();
@@ -53,7 +57,7 @@ export function createOllamaProvider(model: string): LLMProvider {
                     prompt_eval_count?: number;
                     eval_count?: number;
                   };
-                  if (data.response) process.stdout.write(data.response);
+                  if (data.response) { process.stdout.write(data.response); answerText += data.response; }
                   if (data.done) {
                     inputTokens = data.prompt_eval_count ?? 0;
                     outputTokens = data.eval_count ?? 0;
@@ -66,7 +70,7 @@ export function createOllamaProvider(model: string): LLMProvider {
 
             res.on('end', () => {
               process.stdout.write('\n');
-              resolve({ inputTokens, outputTokens });
+              resolve({ inputTokens, outputTokens, answerText });
             });
 
             res.on('error', reject);

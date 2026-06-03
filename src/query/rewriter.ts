@@ -13,6 +13,12 @@ function looksLikeFollowUp(question: string): boolean {
   return false;
 }
 
+function simpleRewrite(question: string, lastTurn: ConversationTurn): string {
+  // Grab key noun phrases from the previous question (first 12 words) and prepend
+  const prevContext = lastTurn.question.split(/\s+/).slice(0, 12).join(' ');
+  return `${prevContext} — ${question}`;
+}
+
 export async function rewriteQuery(
   question: string,
   history?: ConversationTurn[]
@@ -24,6 +30,7 @@ export async function rewriteQuery(
   const lastTurn = history[history.length - 1];
   const model = process.env.OLLAMA_MODEL ?? 'llama3.2';
   const baseUrl = process.env.OLLAMA_URL ?? 'http://localhost:11434';
+  const fallback = simpleRewrite(question, lastTurn);
 
   const prompt = [
     `Given this conversation:`,
@@ -64,7 +71,7 @@ export async function rewriteQuery(
               if (rewritten && rewritten.length > 0) {
                 resolve(rewritten);
               } else {
-                resolve(question);
+                resolve(fallback);
               }
             } catch {
               resolve(question);
@@ -73,12 +80,12 @@ export async function rewriteQuery(
         }
       );
 
-      req.on('error', () => resolve(question));
-      req.on('timeout', () => { req.destroy(); resolve(question); });
+      req.on('error', () => resolve(fallback));
+      req.on('timeout', () => { req.destroy(); resolve(fallback); });
       req.write(body);
       req.end();
     });
   } catch {
-    return question;
+    return fallback;
   }
 }

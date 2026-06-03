@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
-import { VectorStore, SearchResult } from '../types';
+import { FileMetadata, VectorStore, SearchResult } from '../types';
 
 export function createSQLiteVectorStore(dbPath: string): VectorStore {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -12,10 +12,13 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS documents (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      file_path   TEXT NOT NULL UNIQUE,
-      content_hash TEXT NOT NULL,
-      ingested_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_path       TEXT NOT NULL UNIQUE,
+      content_hash    TEXT NOT NULL,
+      ingested_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      file_created_at INTEGER,
+      file_modified_at INTEGER,
+      file_size_bytes INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS chunks (
@@ -29,16 +32,49 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
     CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
   `);
 
+  // Migrate existing DBs that predate file metadata columns
+  const existingCols = (db.prepare('PRAGMA table_info(documents)').all() as { name: string }[]).map(r => r.name);
+  if (!existingCols.includes('file_created_at'))  db.exec('ALTER TABLE documents ADD COLUMN file_created_at INTEGER');
+  if (!existingCols.includes('file_modified_at')) db.exec('ALTER TABLE documents ADD COLUMN file_modified_at INTEGER');
+  if (!existingCols.includes('file_size_bytes'))  db.exec('ALTER TABLE documents ADD COLUMN file_size_bytes INTEGER');
+
+  // Backfill metadata for docs ingested before this feature
+  const backfill = db.prepare(
+    `UPDATE documents SET file_created_at = ?, file_modified_at = ?, file_size_bytes = ? WHERE file_path = ?`
+  );
+  const docsWithoutMeta = db
+    .prepare('SELECT file_path FROM documents WHERE file_created_at IS NULL')
+    .all() as { file_path: string }[];
+  for (const { file_path } of docsWithoutMeta) {
+    try {
+      const stat = fs.statSync(file_path);
+      backfill.run(
+        Math.floor(stat.birthtime.getTime() / 1000),
+        Math.floor(stat.mtime.getTime()     / 1000),
+        stat.size,
+        file_path,
+      );
+    } catch {
+      // file may have moved — leave nulls, not a fatal error
+    }
+  }
+
   return {
-    async addDocument(filePath: string, contentHash: string): Promise<number> {
+    async addDocument(filePath: string, contentHash: string, meta?: FileMetadata): Promise<number> {
+      const createdAt  = meta ? Math.floor(meta.createdAt.getTime()  / 1000) : null;
+      const modifiedAt = meta ? Math.floor(meta.modifiedAt.getTime() / 1000) : null;
+      const sizeBytes  = meta ? meta.sizeBytes : null;
       const result = db
         .prepare(
-          `INSERT INTO documents (file_path, content_hash)
-           VALUES (?, ?)
-           ON CONFLICT(file_path) DO UPDATE SET content_hash = excluded.content_hash,
-                                                ingested_at  = strftime('%s', 'now')`
+          `INSERT INTO documents (file_path, content_hash, file_created_at, file_modified_at, file_size_bytes)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(file_path) DO UPDATE SET content_hash     = excluded.content_hash,
+                                                ingested_at      = strftime('%s', 'now'),
+                                                file_created_at  = excluded.file_created_at,
+                                                file_modified_at = excluded.file_modified_at,
+                                                file_size_bytes  = excluded.file_size_bytes`
         )
-        .run(filePath, contentHash);
+        .run(filePath, contentHash, createdAt, modifiedAt, sizeBytes);
       return result.lastInsertRowid as number;
     },
 
@@ -69,7 +105,7 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
     async similaritySearch(queryEmbedding: number[], k: number): Promise<SearchResult[]> {
       const rows = db
         .prepare(
-          `SELECT c.content, c.embedding, c.chunk_index, d.file_path
+          `SELECT c.content, c.embedding, c.chunk_index, d.file_path, d.file_created_at, d.file_modified_at
            FROM chunks c
            JOIN documents d ON d.id = c.document_id`
         )
@@ -78,6 +114,8 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
           embedding: string;
           chunk_index: number;
           file_path: string;
+          file_created_at: number | null;
+          file_modified_at: number | null;
         }>;
 
       return rows
@@ -86,6 +124,8 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
           filePath: row.file_path,
           chunkIndex: row.chunk_index,
           similarity: cosineSimilarity(queryEmbedding, JSON.parse(row.embedding) as number[]),
+          fileCreatedAt:  row.file_created_at  ? new Date(row.file_created_at  * 1000) : undefined,
+          fileModifiedAt: row.file_modified_at ? new Date(row.file_modified_at * 1000) : undefined,
         }))
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, k);

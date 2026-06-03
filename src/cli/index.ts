@@ -8,8 +8,9 @@ import { createLocalEmbeddingProvider } from '../embeddings/local';
 import { createSQLiteVectorStore } from '../vectorstore/sqlite';
 import { ParserRegistry } from '../ingestion/parsers';
 import { runIngestion } from '../ingestion/ingestionEngine';
-import { askQuestion } from '../query/engine';
+import { askQuestion, chatTurn } from '../query/engine';
 import { resolveProvider } from '../llm';
+import { ConversationTurn } from '../types';
 
 const DB_PATH = path.join(process.cwd(), '.myworkjournal', 'index.db');
 
@@ -79,6 +80,59 @@ async function handleAsk(question: string, topK = 5): Promise<void> {
   }
   console.log(`Tip         use -k <n> to retrieve more context (current: ${topK})`);
   console.log('─'.repeat(50));
+}
+
+async function handleChat(topK = 5): Promise<void> {
+  if (!dbExists()) return;
+
+  let provider: Awaited<ReturnType<typeof resolveProvider>>;
+  try {
+    provider = await resolveProvider();
+  } catch (err) {
+    console.error((err as Error).message);
+    return;
+  }
+
+  const embedder = createLocalEmbeddingProvider();
+  const store = createSQLiteVectorStore(DB_PATH);
+
+  console.log(`Provider : ${provider.name}`);
+  console.log(`Sources  : ${topK} chunks per turn  (-k <n> to change)`);
+  console.log('Type your question and press Enter. Type "exit" to quit.\n');
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'you> ' });
+  rl.prompt();
+
+  let history: ConversationTurn[] = [];
+  let totalIn = 0;
+  let totalOut = 0;
+
+  rl.on('line', async (line) => {
+    rl.pause();
+    const question = line.trim();
+
+    if (!question) { rl.prompt(); rl.resume(); return; }
+    if (question === 'exit' || question === 'quit') { rl.close(); return; }
+
+    console.log('\nmywj>');
+    const { usage, updatedHistory } = await chatTurn(question, embedder, store, provider.provider, history, topK);
+    history = updatedHistory;
+
+    if (usage) {
+      totalIn += usage.inputTokens;
+      totalOut += usage.outputTokens;
+      const fmt = (n: number) => n.toLocaleString('en-US');
+      console.log(`\nTokens  ${fmt(usage.inputTokens)} in · ${fmt(usage.outputTokens)} out  (session: ${fmt(totalIn)} in · ${fmt(totalOut)} out)`);
+    }
+    console.log();
+    rl.prompt();
+    rl.resume();
+  });
+
+  rl.on('close', () => {
+    console.log('Bye.');
+    process.exit(0);
+  });
 }
 
 async function handleStats(): Promise<void> {
@@ -222,6 +276,14 @@ program
   .option('-k, --top-k <n>', 'Number of source chunks to retrieve (more = richer context but higher token cost)', '5')
   .action(async (question: string, options: { topK: string }) => {
     await handleAsk(question, parseInt(options.topK, 10));
+  });
+
+program
+  .command('chat')
+  .description('Start an interactive chat session with conversation history')
+  .option('-k, --top-k <n>', 'Number of source chunks to retrieve per turn', '5')
+  .action(async (options: { topK: string }) => {
+    await handleChat(parseInt(options.topK, 10));
   });
 
 program
