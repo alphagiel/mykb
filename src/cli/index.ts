@@ -98,7 +98,7 @@ async function handleChat(topK = 5): Promise<void> {
 
   console.log(`Provider : ${provider.name}`);
   console.log(`Sources  : ${topK} chunks per turn  (-k <n> to change)`);
-  console.log('Type your question and press Enter. Type "exit" to quit.\n');
+  console.log('Type or paste your input. Press Enter on an empty line when done. Type "exit" to quit.\n');
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'you> ' });
   rl.prompt();
@@ -106,15 +106,16 @@ async function handleChat(topK = 5): Promise<void> {
   let history: ConversationTurn[] = [];
   let totalIn = 0;
   let totalOut = 0;
+  let lineBuffer: string[] = [];
+  let awaitingConfirm = false;
 
-  rl.on('line', async (line) => {
-    rl.pause();
-    const question = line.trim();
+  const confirm = (question: string): Promise<boolean> =>
+    new Promise(resolve => rl.question('Submit? [Y/n] ', ans => resolve(ans.trim().toLowerCase() !== 'n')));
 
-    if (!question) { rl.prompt(); rl.resume(); return; }
-    if (question === 'exit' || question === 'quit') { rl.close(); return; }
-
-    console.log('\nmywj>');
+  const processQuestion = async (question: string) => {
+    console.log('\n' + '='.repeat(60));
+    console.log('mywj');
+    console.log('='.repeat(60));
     const { usage, updatedHistory } = await chatTurn(question, embedder, store, provider.provider, history, topK);
     history = updatedHistory;
 
@@ -124,9 +125,34 @@ async function handleChat(topK = 5): Promise<void> {
       const fmt = (n: number) => n.toLocaleString('en-US');
       console.log(`\nTokens  ${fmt(usage.inputTokens)} in · ${fmt(usage.outputTokens)} out  (session: ${fmt(totalIn)} in · ${fmt(totalOut)} out)`);
     }
-    console.log();
-    rl.prompt();
-    rl.resume();
+    console.log('='.repeat(60) + '\n');
+  };
+
+  rl.on('line', async (line) => {
+    if (awaitingConfirm) return;
+
+    // Empty line = end of input
+    if (line.trim() === '') {
+      const question = lineBuffer.join('\n').trim();
+      lineBuffer = [];
+
+      if (!question) { rl.prompt(); return; }
+      if (question === 'exit' || question === 'quit') { rl.close(); return; }
+
+      awaitingConfirm = true;
+      const ok = await confirm(question);
+      awaitingConfirm = false;
+
+      if (ok) {
+        await processQuestion(question);
+      } else {
+        console.log('Discarded.\n');
+      }
+      rl.prompt();
+      return;
+    }
+
+    lineBuffer.push(line);
   });
 
   rl.on('close', () => {
