@@ -30,6 +30,19 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
     );
 
     CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+      chunk_id      UNINDEXED,
+      content,
+      filename_stem,
+      tokenize = 'unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS trg_chunks_fts_delete
+    AFTER DELETE ON chunks
+    BEGIN
+      DELETE FROM chunks_fts WHERE chunk_id = OLD.id;
+    END;
   `);
 
   // Migrate existing DBs that predate file metadata columns
@@ -91,14 +104,20 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
       embedding: number[],
       chunkIndex: number
     ): Promise<void> {
-      db.prepare(
+      const result = db.prepare(
         `INSERT INTO chunks (document_id, content, embedding, chunk_index)
          VALUES (?, ?, ?, ?)`
       ).run(documentId, content, JSON.stringify(embedding), chunkIndex);
+
+      const chunkId = result.lastInsertRowid as number;
+      const doc = db.prepare('SELECT file_path FROM documents WHERE id = ?').get(documentId) as { file_path: string };
+      const filenameStem = path.basename(doc.file_path, path.extname(doc.file_path));
+      db.prepare(`INSERT INTO chunks_fts(chunk_id, content, filename_stem) VALUES (?, ?, ?)`)
+        .run(chunkId, content, filenameStem);
     },
 
     async deleteDocument(filePath: string): Promise<void> {
-      // Chunks cascade via FK
+      // Chunks cascade via FK; trigger cleans up chunks_fts
       db.prepare('DELETE FROM documents WHERE file_path = ?').run(filePath);
     },
 
@@ -131,6 +150,42 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
         .slice(0, k);
     },
 
+    async ftsSearch(query: string): Promise<SearchResult[]> {
+      const ftsQuery = buildFtsQuery(query);
+      if (!ftsQuery) return [];
+
+      try {
+        const rows = db
+          .prepare(
+            `SELECT c.content, c.chunk_index, d.file_path, d.file_created_at, d.file_modified_at
+             FROM chunks_fts f
+             JOIN chunks c ON c.id = f.chunk_id
+             JOIN documents d ON d.id = c.document_id
+             WHERE chunks_fts MATCH ?
+             ORDER BY rank`
+          )
+          .all(ftsQuery) as Array<{
+            content: string;
+            chunk_index: number;
+            file_path: string;
+            file_created_at: number | null;
+            file_modified_at: number | null;
+          }>;
+
+        return rows.map(row => ({
+          content: row.content,
+          filePath: row.file_path,
+          chunkIndex: row.chunk_index,
+          similarity: 1.0,
+          fileCreatedAt:  row.file_created_at  ? new Date(row.file_created_at  * 1000) : undefined,
+          fileModifiedAt: row.file_modified_at ? new Date(row.file_modified_at * 1000) : undefined,
+        }));
+      } catch {
+        // Malformed FTS query — fall back gracefully
+        return [];
+      }
+    },
+
     async getStats(): Promise<{ documentCount: number; chunkCount: number }> {
       const { count: documentCount } = db
         .prepare('SELECT COUNT(*) as count FROM documents')
@@ -141,6 +196,14 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
       return { documentCount, chunkCount };
     },
   };
+}
+
+function buildFtsQuery(text: string): string {
+  const tokens = text
+    .replace(/[^\w\s-]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 3);
+  return tokens.map(t => `"${t}"`).join(' OR ');
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {

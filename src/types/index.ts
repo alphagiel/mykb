@@ -64,5 +64,6 @@ export interface VectorStore {
   addChunk(documentId: number, content: string, embedding: number[], chunkIndex: number): Promise<void>;
   deleteDocument(filePath: string): Promise<void>;
   similaritySearch(queryEmbedding: number[], k: number): Promise<SearchResult[]>;
+  ftsSearch(query: string): Promise<SearchResult[]>;
   getStats(): Promise<{ documentCount: number; chunkCount: number }>;
 }

@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { EmbeddingProvider, FileMetadata, VectorStore } from '../types';
 import { ParserRegistry } from './parsers';
 import { scan, ScanOptions } from './scanner';
@@ -49,9 +50,11 @@ export async function runIngestion(
       };
       const documentId = await store.addDocument(file.path, doc.metadata.contentHash, meta);
       const chunks = chunkDocument(doc.content, documentId);
+      const basename = path.basename(file.path, path.extname(file.path));
 
       for (const chunk of chunks) {
-        const embedding = await embedder.embed(chunk.content);
+        const textToEmbed = `Source: ${basename}\n${chunk.content}`;
+        const embedding = await embedder.embed(textToEmbed);
         await store.addChunk(documentId, chunk.content, embedding, chunk.chunkIndex);
       }
 

@@ -11,6 +11,37 @@ function chunkHeader(c: SearchResult): string {
   return parts.join(' | ');
 }
 
+async function hybridSearch(
+  question: string,
+  embedder: EmbeddingProvider,
+  store: VectorStore,
+  topK: number,
+  precomputedEmbedding?: number[],
+): Promise<SearchResult[]> {
+  const [ftsHits, queryEmbedding] = await Promise.all([
+    store.ftsSearch(question),
+    precomputedEmbedding ? Promise.resolve(precomputedEmbedding) : embedder.embed(question),
+  ]);
+
+  const dedup = new Set<string>();
+  const key = (r: SearchResult) => `${r.filePath}::${r.chunkIndex}`;
+
+  const pinned = ftsHits.filter(h => {
+    const k = key(h);
+    if (dedup.has(k)) return false;
+    dedup.add(k);
+    return true;
+  }).slice(0, topK);
+
+  const remaining = Math.max(0, topK - pinned.length);
+  if (remaining === 0) return pinned;
+
+  const semantic = await store.similaritySearch(queryEmbedding, topK);
+  const extra = semantic.filter(s => !dedup.has(key(s))).slice(0, remaining);
+
+  return [...pinned, ...extra];
+}
+
 export async function askQuestion(
   question: string,
   embedder: EmbeddingProvider,
@@ -19,8 +50,7 @@ export async function askQuestion(
   topK = 5,
   precomputedEmbedding?: number[]
 ): Promise<UsageStats | null> {
-  const queryEmbedding = precomputedEmbedding ?? await embedder.embed(question);
-  const chunks = await store.similaritySearch(queryEmbedding, topK);
+  const chunks = await hybridSearch(question, embedder, store, topK, precomputedEmbedding);
 
   if (chunks.length === 0) {
     console.log('No relevant information found. Run `ingest <path>` to populate the knowledge base.');
@@ -59,8 +89,7 @@ export async function chatTurn(
   topK = 5,
 ): Promise<{ usage: UsageStats | null; updatedHistory: ConversationTurn[] }> {
   const searchQuery = await rewriteQuery(question, history);
-  const queryEmbedding = await embedder.embed(searchQuery);
-  const chunks = await store.similaritySearch(queryEmbedding, topK);
+  const chunks = await hybridSearch(searchQuery, embedder, store, topK);
 
   if (chunks.length === 0) {
     console.log('No relevant information found in the knowledge base.');
