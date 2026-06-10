@@ -4,12 +4,28 @@
   "description": "A searchable work journal powered by local RAG",
   "main": "dist/cli/index.js",
   "bin": {
-    "mywj": "./dist/cli/index.js"
+    "mywj": "dist/cli/index.js"
   },
+  "files": [
+    "dist/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "rag",
+    "knowledge-base",
+    "work-journal",
+    "local-ai",
+    "semantic-search",
+    "cli"
+  ],
+  "license": "MIT",
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli/index.ts",
-    "start": "node dist/cli/index.js"
+    "start": "node dist/cli/index.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.54.0",

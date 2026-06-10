@@ -153,6 +153,7 @@ async function handleChat(topK = 5): Promise<void> {
     }
 
     lineBuffer.push(line);
+    if (lineBuffer.length === 1) process.stdout.write('  (press Enter again to send)\n');
   });
 
   rl.on('close', () => {

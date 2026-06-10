@@ -1,0 +1,6 @@
+src/
+test-notes.txt
+.myworkjournal/
+.env
+*.db
+tsconfig.json
