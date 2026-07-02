@@ -5,10 +5,26 @@ A searchable work journal powered by local RAG (Retrieval Augmented Generation).
 Point it at your tickets, notes, or exports and ask natural language questions over your own work history — instantly surface what you built, why you built it, and what broke along the way.
 
 ```bash
-ask "What auth issues did we have in Q1?"
-ask "When did we first run into the memory leak problem?"
-ask "What was the fix for NN-2725?"
+# Capture a quick note — prompts for title + content, indexed immediately
+mywj note
+
+# Ask anything across all your notes and ingested files
+mywj ask "What auth issues did we have in Q1?"
+mywj ask "When did we first run into the memory leak problem?"
+mywj ask "What was the fix for NN-2725?"
+
+# Edit or delete a note
+mywj edit-note
+mywj delete-note
+
+# Ingest a folder of existing notes/exports
+mywj ingest ./path/to/notes
+
+# Interactive chat with conversation history
+mywj chat
 ```
+
+> **Tip:** Press `Esc` at any time during answer generation to cancel the stream immediately.
 
 As you keep adding tickets over time, the value compounds. A year from now you'll have a fully queryable record of everything you've worked on.
 
@@ -17,25 +33,55 @@ Technically: ingests `.txt`, `.md`, and `.rtf` files into a local SQLite vector 
 ## Requirements
 
 - Node.js 18+
-- An Anthropic API key — get one at [console.anthropic.com](https://console.anthropic.com)
-- No other API keys — embeddings run locally via `@xenova/transformers`
+- [Ollama](https://ollama.com) — default LLM, runs fully on your machine, zero cost, no API key
+
+Embeddings also run locally via `@xenova/transformers` — so out of the box, **nothing leaves your machine and nothing costs money.**
 
 ---
 
 ## One-time setup
 
 ```bash
-cd myworkjournal
-
-npm install       # install dependencies
-npm run build     # compile TypeScript → dist/
+npm install -g myworkjournal
 ```
 
-Add your Anthropic API key to `.env`:
+Pull the default model:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+That's it. No API keys, no accounts, no billing.
+
+---
+
+## Why Ollama by default?
+
+Most tools like this require an API key and charge per query. We default to [Ollama](https://ollama.com) so you can run everything locally for free. `llama3.1:8b` is the default model — it strikes the best balance between quality and speed for RAG workloads on a typical developer machine (good at reading context, following instructions, and citing sources).
+
+You can override the model by setting `OLLAMA_MODEL` in your `.env`:
 
 ```
+OLLAMA_MODEL=qwen2.5:7b    # stronger at Q&A
+OLLAMA_MODEL=llama3.1:70b  # best quality, needs a powerful machine
+OLLAMA_MODEL=llama3.2:3b   # fastest, lowest memory usage
+```
+
+---
+
+## Using Claude or OpenAI instead
+
+If you want higher quality answers and don't mind API costs, set a key in `.env` and it's picked up automatically:
+
+```
+# Claude (Anthropic) — best overall quality
 ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenAI
+OPENAI_API_KEY=sk-...
 ```
+
+Priority order: **Anthropic → OpenAI → Ollama (default)**. Ollama is always the fallback if no API key is set.
 
 ---
 
@@ -66,7 +112,7 @@ mywj ingest ./notes --extensions .txt,.md
 mywj ask "What was the root cause of NN-2725?"
 ```
 
-Finds the most relevant chunks via cosine similarity and streams the answer from Claude in real time.
+Finds the most relevant chunks via cosine similarity and streams the answer in real time.
 
 ---
 
@@ -126,7 +172,7 @@ src/
 ├── vectorstore/
 │   └── sqlite.ts              better-sqlite3 + cosine similarity in JS
 └── query/
-    └── engine.ts              top-k retrieval + Claude claude-opus-4-6 synthesis (streaming)
+    └── engine.ts              top-k retrieval + LLM synthesis (streaming)
 ```
 
 ---
@@ -164,6 +210,6 @@ Chunks are deleted automatically when their parent document is removed (`ON DELE
 
 | Phase | Features |
 |-------|----------|
-| 1 (current) | `.txt`, `.md`, `.rtf` — local embeddings — SQLite — Claude streaming synthesis |
-| 2 | PDF + DOCX parsers, metadata filtering by ticket ID |
-| 3 | Hybrid search, LanceDB, config file, structured ticket extraction |
+| 1 ✅ | `.txt`, `.md`, `.rtf` — local embeddings — SQLite — hybrid FTS + semantic search — Claude streaming synthesis |
+| 2 ✅ | Quick capture (`mywj note`) — edit + delete notes — Esc to cancel — interactive chat |
+| 3 | PDF parser — git log ingestion (`mywj ingest-git`) — URL ingestion (`mywj ingest-url <url>`) |

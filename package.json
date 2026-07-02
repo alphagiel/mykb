@@ -1,6 +1,6 @@
 {
   "name": "myworkjournal",
-  "version": "0.1.2",
+  "version": "0.3.1",
   "description": "A searchable work journal powered by local RAG",
   "main": "dist/cli/index.js",
   "bin": {

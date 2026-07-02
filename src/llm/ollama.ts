@@ -11,7 +11,7 @@ export function createOllamaProvider(model: string): LLMProvider {
   const baseUrl = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 
   return {
-    async answer(question: string, context: string, history: ConversationTurn[] = []): Promise<UsageStats> {
+    async answer(question: string, context: string, history: ConversationTurn[] = [], signal?: AbortSignal): Promise<UsageStats | null> {
       const historyBlock = history.length
         ? '\n\nPrevious conversation:\n' + history.map(t => `Q: ${t.question}\nA: ${t.answer}`).join('\n\n')
         : '';
@@ -73,12 +73,20 @@ export function createOllamaProvider(model: string): LLMProvider {
               resolve({ inputTokens, outputTokens, answerText });
             });
 
-            res.on('error', reject);
+            res.on('error', () => {
+              if (signal?.aborted) { process.stdout.write('\n[cancelled]\n'); resolve(null); }
+              else reject(new Error(`Could not connect to Ollama at ${baseUrl}. Is it running?`));
+            });
           }
         );
 
+        if (signal) {
+          signal.addEventListener('abort', () => req.destroy(), { once: true });
+        }
+
         req.on('error', (err) => {
-          reject(new Error(`Could not connect to Ollama at ${baseUrl}. Is it running?\n${err.message}`));
+          if (signal?.aborted) { process.stdout.write('\n[cancelled]\n'); resolve(null); }
+          else reject(new Error(`Could not connect to Ollama at ${baseUrl}. Is it running?\n${err.message}`));
         });
 
         req.write(body);

@@ -23,23 +23,18 @@ async function hybridSearch(
     precomputedEmbedding ? Promise.resolve(precomputedEmbedding) : embedder.embed(question),
   ]);
 
-  const dedup = new Set<string>();
-  const key = (r: SearchResult) => `${r.filePath}::${r.chunkIndex}`;
-
-  const pinned = ftsHits.filter(h => {
-    const k = key(h);
-    if (dedup.has(k)) return false;
-    dedup.add(k);
-    return true;
-  }).slice(0, topK);
-
-  const remaining = Math.max(0, topK - pinned.length);
-  if (remaining === 0) return pinned;
-
   const semantic = await store.similaritySearch(queryEmbedding, topK);
-  const extra = semantic.filter(s => !dedup.has(key(s))).slice(0, remaining);
 
-  return [...pinned, ...extra];
+  const key = (r: SearchResult) => `${r.filePath}::${r.chunkIndex}`;
+  const dedup = new Set<string>();
+  const results: SearchResult[] = [];
+
+  for (const r of [...ftsHits.slice(0, topK), ...semantic]) {
+    const k = key(r);
+    if (!dedup.has(k)) { dedup.add(k); results.push(r); }
+  }
+
+  return results;
 }
 
 export async function askQuestion(
@@ -48,7 +43,8 @@ export async function askQuestion(
   store: VectorStore,
   llm: LLMProvider,
   topK = 5,
-  precomputedEmbedding?: number[]
+  precomputedEmbedding?: number[],
+  signal?: AbortSignal
 ): Promise<UsageStats | null> {
   const chunks = await hybridSearch(question, embedder, store, topK, precomputedEmbedding);
 
@@ -61,7 +57,7 @@ export async function askQuestion(
     .map((c, i) => `[${i + 1}] ${chunkHeader(c)}\n${c.content}`)
     .join('\n\n---\n\n');
 
-  const usage = await llm.answer(question, context);
+  const usage = await llm.answer(question, context, [], signal);
 
   // Group citation indices by file path to deduplicate sources display
   const fileToIndices = new Map<string, number[]>();
@@ -87,6 +83,7 @@ export async function chatTurn(
   llm: LLMProvider,
   history: ConversationTurn[],
   topK = 5,
+  signal?: AbortSignal
 ): Promise<{ usage: UsageStats | null; updatedHistory: ConversationTurn[] }> {
   const searchQuery = await rewriteQuery(question, history);
   const chunks = await hybridSearch(searchQuery, embedder, store, topK);
@@ -97,7 +94,7 @@ export async function chatTurn(
   }
 
   const context = chunks.map((c, i) => `[${i + 1}] ${chunkHeader(c)}\n${c.content}`).join('\n\n---\n\n');
-  const usage = await llm.answer(question, context, history);
+  const usage = await llm.answer(question, context, history, signal);
 
   const fileToIndices = new Map<string, number[]>();
   chunks.forEach((c, i) => {

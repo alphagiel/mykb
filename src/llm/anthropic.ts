@@ -10,7 +10,7 @@ export function createAnthropicProvider(apiKey: string): LLMProvider {
   const client = new Anthropic({ apiKey });
 
   return {
-    async answer(question: string, context: string, history: ConversationTurn[] = []): Promise<UsageStats> {
+    async answer(question: string, context: string, history: ConversationTurn[] = [], signal?: AbortSignal): Promise<UsageStats | null> {
       const messages: Anthropic.MessageParam[] = [];
 
       for (const turn of history) {
@@ -20,16 +20,26 @@ export function createAnthropicProvider(apiKey: string): LLMProvider {
       messages.push({ role: 'user', content: `Context:\n${context}\n\nQuestion: ${question}` });
 
       let answerText = '';
-      const stream = client.messages.stream({ model: MODEL, max_tokens: 4096, system: SYSTEM, messages });
-      stream.on('text', (delta) => { process.stdout.write(delta); answerText += delta; });
-      const final = await stream.finalMessage();
-      process.stdout.write('\n');
-
-      return {
-        inputTokens: final.usage.input_tokens,
-        outputTokens: final.usage.output_tokens,
-        answerText,
-      };
+      try {
+        const stream = client.messages.stream(
+          { model: MODEL, max_tokens: 4096, system: SYSTEM, messages },
+          { signal }
+        );
+        stream.on('text', (delta) => { process.stdout.write(delta); answerText += delta; });
+        const final = await stream.finalMessage();
+        process.stdout.write('\n');
+        return {
+          inputTokens: final.usage.input_tokens,
+          outputTokens: final.usage.output_tokens,
+          answerText,
+        };
+      } catch (err: unknown) {
+        if (signal?.aborted) {
+          process.stdout.write('\n[cancelled]\n');
+          return null;
+        }
+        throw err;
+      }
     },
   };
 }

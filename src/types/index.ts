@@ -55,7 +55,7 @@ export interface ConversationTurn {
 }
 
 export interface LLMProvider {
-  answer(question: string, context: string, history?: ConversationTurn[]): Promise<UsageStats>;
+  answer(question: string, context: string, history?: ConversationTurn[], signal?: AbortSignal): Promise<UsageStats | null>;
 }
 
 export interface VectorStore {

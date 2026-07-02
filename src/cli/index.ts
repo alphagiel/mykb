@@ -4,6 +4,8 @@ import { Command } from 'commander';
 import * as readline from 'readline';
 import * as path from 'path';
 import * as fs from 'fs';
+import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { createLocalEmbeddingProvider } from '../embeddings/local';
 import { createSQLiteVectorStore } from '../vectorstore/sqlite';
 import { ParserRegistry } from '../ingestion/parsers';
@@ -13,6 +15,7 @@ import { resolveProvider } from '../llm';
 import { ConversationTurn } from '../types';
 
 const DB_PATH = path.join(process.cwd(), '.myworkjournal', 'index.db');
+const CAPTURES_DIR = path.join(path.dirname(DB_PATH), 'captures');
 
 function dbExists(): boolean {
   if (!fs.existsSync(DB_PATH)) {
@@ -47,6 +50,177 @@ async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Pr
   console.log(`  Failed  : ${result.failed}`);
 }
 
+async function handleNoteInteractive(rl: readline.Interface): Promise<void> {
+  if (!dbExists()) return;
+  fs.mkdirSync(CAPTURES_DIR, { recursive: true });
+
+  const title = await new Promise<string>(resolve =>
+    rl.question('Title: ', line => resolve(line.trim()))
+  );
+  if (!title) { console.log('Cancelled.'); return; }
+
+  console.log('Note (type or paste, Enter when done):');
+  const lines: string[] = [];
+  await new Promise<void>(resolve => {
+    let timer: NodeJS.Timeout | null = null;
+    const onLine = (line: string) => {
+      lines.push(line);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        rl.removeListener('line', onLine);
+        rl.pause();
+        resolve();
+      }, 50);
+    };
+    rl.on('line', onLine);
+    rl.resume();
+  });
+
+  const content = lines.join('\n').trim();
+  if (!content) { console.log('Cancelled.'); return; }
+
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filePath = path.join(CAPTURES_DIR, `${slug}-${ts}.md`);
+  const fileContent = `# ${title}\n\n${content}\n`;
+
+  fs.writeFileSync(filePath, fileContent, 'utf-8');
+
+  const contentHash = createHash('sha256').update(fileContent).digest('hex');
+  const embedder = createLocalEmbeddingProvider();
+  const store = createSQLiteVectorStore(DB_PATH);
+
+  const stat = fs.statSync(filePath);
+  const docId = await store.addDocument(filePath, contentHash, {
+    createdAt:  stat.birthtime,
+    modifiedAt: stat.mtime,
+    sizeBytes:  stat.size,
+  });
+  const embedding = await embedder.embed(`Source: ${slug}\n${title}\n${content}`);
+  await store.addChunk(docId, fileContent.trim(), embedding, 0);
+
+  console.log(`Captured: ${path.basename(filePath)}`);
+}
+
+async function handleEditNote(rl: readline.Interface): Promise<void> {
+  if (!dbExists()) return;
+  if (!fs.existsSync(CAPTURES_DIR)) { console.log('No notes found.'); return; }
+
+  const files = fs.readdirSync(CAPTURES_DIR).filter(f => f.endsWith('.md')).sort();
+  if (files.length === 0) { console.log('No notes found.'); return; }
+
+  const notes = files.map(f => {
+    const fp = path.join(CAPTURES_DIR, f);
+    const firstLine = fs.readFileSync(fp, 'utf-8').split('\n')[0];
+    const title = firstLine.startsWith('#') ? firstLine.replace(/^#+\s*/, '') : f;
+    return { filePath: fp, title };
+  });
+
+  notes.forEach((n, i) => console.log(`  ${i + 1}. ${n.title}`));
+  console.log();
+
+  const pick = await new Promise<string>(resolve =>
+    rl.question('Pick a number to edit (or Enter to cancel): ', line => resolve(line.trim()))
+  );
+
+  const idx = parseInt(pick, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= notes.length) { console.log('Cancelled.'); return; }
+
+  const note = notes[idx];
+  const before = fs.readFileSync(note.filePath, 'utf-8');
+  const editor = process.env.EDITOR ?? process.env.VISUAL ?? 'vi';
+
+  // Pause readline so the editor can take over stdin/stdout
+  rl.pause();
+  spawnSync(editor, [note.filePath], { stdio: 'inherit' });
+  rl.resume();
+
+  const after = fs.readFileSync(note.filePath, 'utf-8');
+  if (after === before) { console.log('No changes.'); return; }
+
+  const contentHash = createHash('sha256').update(after).digest('hex');
+  const embedder = createLocalEmbeddingProvider();
+  const store = createSQLiteVectorStore(DB_PATH);
+
+  // Remove old chunks, re-add with updated content
+  await store.deleteDocument(note.filePath);
+  const stat = fs.statSync(note.filePath);
+  const docId = await store.addDocument(note.filePath, contentHash, {
+    createdAt:  stat.birthtime,
+    modifiedAt: stat.mtime,
+    sizeBytes:  stat.size,
+  });
+  const slug = path.basename(note.filePath, '.md');
+  const embedding = await embedder.embed(`Source: ${slug}\n${after}`);
+  await store.addChunk(docId, after.trim(), embedding, 0);
+
+  console.log('Saved and re-indexed.');
+}
+
+async function handleDeleteNote(rl: readline.Interface): Promise<void> {
+  if (!dbExists()) return;
+  if (!fs.existsSync(CAPTURES_DIR)) { console.log('No notes found.'); return; }
+
+  const files = fs.readdirSync(CAPTURES_DIR).filter(f => f.endsWith('.md')).sort();
+  if (files.length === 0) { console.log('No notes found.'); return; }
+
+  const notes = files.map(f => {
+    const fp = path.join(CAPTURES_DIR, f);
+    const firstLine = fs.readFileSync(fp, 'utf-8').split('\n')[0];
+    const title = firstLine.startsWith('#') ? firstLine.replace(/^#+\s*/, '') : f;
+    return { filePath: fp, title };
+  });
+
+  notes.forEach((n, i) => console.log(`  ${i + 1}. ${n.title}`));
+  console.log();
+
+  const pick = await new Promise<string>(resolve =>
+    rl.question('Pick a number to delete (or Enter to cancel): ', line => resolve(line.trim()))
+  );
+
+  const idx = parseInt(pick, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= notes.length) { console.log('Cancelled.'); return; }
+
+  const note = notes[idx];
+  const confirmed = await new Promise<boolean>(resolve =>
+    rl.question(`Delete "${note.title}"? [y/N] `, line => resolve(line.trim().toLowerCase() === 'y'))
+  );
+  if (!confirmed) { console.log('Cancelled.'); return; }
+
+  fs.unlinkSync(note.filePath);
+  const store = createSQLiteVectorStore(DB_PATH);
+  await store.deleteDocument(note.filePath);
+  console.log('Deleted.');
+}
+
+
+function handleLLMError(err: unknown): void {
+  const msg = (err as Error).message ?? '';
+  if (msg.includes('Could not connect to Ollama')) {
+    console.error('\nOllama is not running. Start it with:\n\n  ollama serve\n\nThen try again, or pick a different provider.');
+  } else {
+    console.error('\nError:', msg);
+  }
+}
+
+function watchForEsc(controller: AbortController, alreadyRaw: boolean): () => void {
+  if (!process.stdin.isTTY) return () => {};
+
+  readline.emitKeypressEvents(process.stdin);
+  if (!alreadyRaw) process.stdin.setRawMode(true);
+
+  const onKeypress = (_str: unknown, key: { name?: string }) => {
+    if (key?.name === 'escape') controller.abort();
+  };
+
+  process.stdin.on('keypress', onKeypress);
+
+  return () => {
+    process.stdin.removeListener('keypress', onKeypress);
+    if (!alreadyRaw && process.stdin.isTTY) process.stdin.setRawMode(false);
+  };
+}
+
 async function handleAsk(question: string, topK = 5): Promise<void> {
   if (!dbExists()) return;
 
@@ -67,8 +241,21 @@ async function handleAsk(question: string, topK = 5): Promise<void> {
   console.log(`Provider : ${provider.name}`);
   console.log(`Sources  : ${topK} chunks (higher = more context, more tokens)`);
   console.log(`\nQ: ${question}\n`);
-  console.log('A:');
-  const usage = await askQuestion(question, embedder, store, provider.provider, topK, queryEmbedding);
+  console.log('A: (Esc to cancel)');
+
+  const controller = new AbortController();
+  const cancelEsc = watchForEsc(controller, false);
+  let usage;
+  try {
+    usage = await askQuestion(question, embedder, store, provider.provider, topK, queryEmbedding, controller.signal);
+  } catch (err) {
+    handleLLMError(err);
+    return;
+  } finally {
+    cancelEsc();
+  }
+
+  if (controller.signal.aborted) return;
 
   console.log();
   console.log('─'.repeat(50));
@@ -98,7 +285,7 @@ async function handleChat(topK = 5): Promise<void> {
 
   console.log(`Provider : ${provider.name}`);
   console.log(`Sources  : ${topK} chunks per turn  (-k <n> to change)`);
-  console.log('Type or paste your input. Press Enter on an empty line when done. Type "exit" to quit.\n');
+  console.log('Type your question and press Enter. Paste multi-line content and it sends automatically. Type "exit" to quit.\n');
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'you> ' });
   rl.prompt();
@@ -107,53 +294,52 @@ async function handleChat(topK = 5): Promise<void> {
   let totalIn = 0;
   let totalOut = 0;
   let lineBuffer: string[] = [];
-  let awaitingConfirm = false;
-
-  const confirm = (question: string): Promise<boolean> =>
-    new Promise(resolve => rl.question('Submit? [Y/n] ', ans => resolve(ans.trim().toLowerCase() !== 'n')));
+  let processing = false;
+  let sendTimer: NodeJS.Timeout | null = null;
 
   const processQuestion = async (question: string) => {
-    console.log('\n' + '='.repeat(60));
-    console.log('mywj');
-    console.log('='.repeat(60));
-    const { usage, updatedHistory } = await chatTurn(question, embedder, store, provider.provider, history, topK);
-    history = updatedHistory;
+    const controller = new AbortController();
+    const cancelEsc = watchForEsc(controller, true);
+    try {
+      console.log('\n' + '='.repeat(60));
+      console.log('mywj  (Esc to cancel)');
+      console.log('='.repeat(60));
+      const { usage, updatedHistory } = await chatTurn(question, embedder, store, provider.provider, history, topK, controller.signal);
+      history = updatedHistory;
 
-    if (usage) {
-      totalIn += usage.inputTokens;
-      totalOut += usage.outputTokens;
-      const fmt = (n: number) => n.toLocaleString('en-US');
-      console.log(`\nTokens  ${fmt(usage.inputTokens)} in · ${fmt(usage.outputTokens)} out  (session: ${fmt(totalIn)} in · ${fmt(totalOut)} out)`);
+      if (!controller.signal.aborted && usage) {
+        totalIn += usage.inputTokens;
+        totalOut += usage.outputTokens;
+        const fmt = (n: number) => n.toLocaleString('en-US');
+        console.log(`\nTokens  ${fmt(usage.inputTokens)} in · ${fmt(usage.outputTokens)} out  (session: ${fmt(totalIn)} in · ${fmt(totalOut)} out)`);
+      }
+      console.log('='.repeat(60) + '\n');
+    } catch (err) {
+      handleLLMError(err);
+    } finally {
+      cancelEsc();
     }
-    console.log('='.repeat(60) + '\n');
   };
 
-  rl.on('line', async (line) => {
-    if (awaitingConfirm) return;
-
-    // Empty line = end of input
-    if (line.trim() === '') {
+  const scheduleSubmit = () => {
+    if (sendTimer) clearTimeout(sendTimer);
+    sendTimer = setTimeout(async () => {
+      sendTimer = null;
       const question = lineBuffer.join('\n').trim();
       lineBuffer = [];
-
       if (!question) { rl.prompt(); return; }
       if (question === 'exit' || question === 'quit') { rl.close(); return; }
-
-      awaitingConfirm = true;
-      const ok = await confirm(question);
-      awaitingConfirm = false;
-
-      if (ok) {
-        await processQuestion(question);
-      } else {
-        console.log('Discarded.\n');
-      }
+      processing = true;
+      await processQuestion(question);
+      processing = false;
       rl.prompt();
-      return;
-    }
+    }, 50);
+  };
 
+  rl.on('line', (line) => {
+    if (processing) return;
     lineBuffer.push(line);
-    if (lineBuffer.length === 1) process.stdout.write('  (press Enter again to send)\n');
+    scheduleSubmit();
   });
 
   rl.on('close', () => {
@@ -178,6 +364,9 @@ async function handleStats(): Promise<void> {
 
 function printHelp(): void {
   console.log(`
+  note                                Capture a note (prompts for title + content)
+  edit note                           Edit a note in $EDITOR and re-index it
+  delete note                         Delete a note (shows list to pick from)
   ingest <path> [-e .txt,.md,.rtf]   Ingest files from a directory into the knowledge base
   ask <question> [-k N]               Ask a question (default -k 5; higher = more context, more tokens)
   stats                               Show knowledge base statistics
@@ -249,6 +438,27 @@ async function runInteractive(): Promise<void> {
           await handleIngest(inputPath, extensions);
           break;
         }
+        case 'note': {
+          await handleNoteInteractive(rl);
+          break;
+        }
+        case 'edit': {
+          if (rest[0] === 'note') {
+            await handleEditNote(rl);
+          } else {
+            console.log('Usage: edit note');
+          }
+          break;
+        }
+        case 'delete': {
+          if (rest[0] === 'note') {
+            await handleDeleteNote(rl);
+          } else {
+            console.log('Usage: delete note');
+          }
+          break;
+        }
+
         case 'ask': {
           const kFlag = rest.indexOf('-k');
           const topK = kFlag !== -1 && rest[kFlag + 1] ? parseInt(rest[kFlag + 1], 10) : 5;
@@ -288,6 +498,37 @@ program
   .name('mywj')
   .description('A searchable work journal powered by local RAG')
   .version('0.1.0');
+
+program
+  .command('note')
+  .description('Capture a note interactively (prompts for title + content)')
+  .action(async () => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await handleNoteInteractive(rl);
+    rl.close();
+    process.exit(0);
+  });
+
+program
+  .command('edit-note')
+  .description('Edit a note in $EDITOR and re-index it')
+  .action(async () => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await handleEditNote(rl);
+    rl.close();
+    process.exit(0);
+  });
+
+program
+  .command('delete-note')
+  .description('Delete a note (shows list to pick from)')
+  .action(async () => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await handleDeleteNote(rl);
+    rl.close();
+    process.exit(0);
+  });
+
 
 program
   .command('ingest <path>')
