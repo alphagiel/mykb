@@ -1,3 +1,9 @@
+// ─────────────────────────────────────────────────────────────────────────
+// INGESTION PIPELINE — STEP 3: NORMALIZE
+// Cleans up whitespace/line-ending inconsistencies across source files and
+// computes a sha256 content hash. That hash is what powers incremental
+// re-ingestion: unchanged files are skipped without re-embedding them.
+// ─────────────────────────────────────────────────────────────────────────
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { ParsedDocument } from '../types';

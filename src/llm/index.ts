@@ -1,7 +1,16 @@
+// ─────────────────────────────────────────────────────────────────────────
+// QUERY PIPELINE — LLM PROVIDER SELECTION
+// Picks which LLMProvider answers questions. Priority: Anthropic → OpenAI →
+// Ollama (always available, fully local, zero cost — the default so the
+// tool works out of the box with no API key). Interactive CLI sessions get
+// a picker prompt when more than one key is configured; non-interactive
+// callers (the web server) auto-pick the best available option.
+// ─────────────────────────────────────────────────────────────────────────
 import * as readline from 'readline';
 import { LLMProvider } from '../types';
 
-export async function resolveProvider(): Promise<{ provider: LLMProvider; name: string }> {
+export async function resolveProvider(opts: { interactive?: boolean } = {}): Promise<{ provider: LLMProvider; name: string }> {
+  const interactive = opts.interactive ?? true;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
   const ollamaModel = process.env.OLLAMA_MODEL ?? 'llama3.1:8b';
@@ -12,9 +21,10 @@ export async function resolveProvider(): Promise<{ provider: LLMProvider; name: 
   if (anthropicKey) options.push({ label: 'Claude (Anthropic)', key: 'anthropic' });
   if (openaiKey)    options.push({ label: 'OpenAI', key: 'openai' });
 
-  let chosen = 'ollama';
+  // Non-interactive callers (e.g. the web server) can't prompt over stdin — prefer a paid API key if present.
+  let chosen = anthropicKey ? 'anthropic' : openaiKey ? 'openai' : 'ollama';
 
-  if (options.length > 1) {
+  if (interactive && options.length > 1) {
     console.log('\nSelect LLM provider:');
     options.forEach((o, i) => console.log(`  ${i + 1}. ${o.label}`));
     console.log();

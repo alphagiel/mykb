@@ -1,3 +1,11 @@
+// ─────────────────────────────────────────────────────────────────────────
+// QUERY PIPELINE — STEP 0 (chat mode only): REWRITE FOLLOW-UP QUESTIONS
+// Detects short/pronoun-heavy follow-ups ("what about that one?") and
+// rewrites them into standalone questions using conversation history, so
+// retrieval isn't searching for the literal (context-free) follow-up text.
+// Uses a small local Ollama call with a regex-based fallback if that fails
+// or times out — retrieval quality degrades gracefully, never hard-fails.
+// ─────────────────────────────────────────────────────────────────────────
 import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';

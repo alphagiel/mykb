@@ -1,3 +1,15 @@
+// ─────────────────────────────────────────────────────────────────────────
+// INGESTION PIPELINE — STEP 6: STORE  |  QUERY PIPELINE — RETRIEVAL BACKEND
+// SQLite-backed VectorStore: `documents` + `chunks` tables hold content and
+// embeddings (as JSON text), plus an FTS5 virtual table (`chunks_fts`) for
+// keyword search. Two retrieval paths live here:
+//   - similaritySearch(): brute-force cosine similarity over all embeddings
+//     in JS (fine up to ~tens of thousands of chunks; swap for a real vector
+//     DB like LanceDB if that stops being true).
+//   - ftsSearch(): SQLite full-text search for exact keyword/term matches
+//     (ticket IDs, error codes) that embeddings alone can miss.
+// Both feed into hybridSearch() in query/engine.ts.
+// ─────────────────────────────────────────────────────────────────────────
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';

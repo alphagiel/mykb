@@ -39,6 +39,76 @@ Embeddings also run locally via `@xenova/transformers` — so out of the box, **
 
 ---
 
+## How it works
+
+RAG = **R**etrieval **A**ugmented **G**eneration: instead of asking an LLM to answer from memory (and possibly hallucinate), you first *retrieve* the most relevant pieces of your own data, then *generate* an answer grounded in exactly that data — with citations back to source files.
+
+There are two independent pipelines. Ingestion happens once per file (and is skipped on unchanged files); query happens on every question.
+
+### 1. Ingestion pipeline — turning files into searchable knowledge
+
+```
+ ┌──────────┐   ┌───────┐   ┌───────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐
+ │  SCAN    │──▶│ PARSE │──▶│ NORMALIZE │──▶│  DEDUP  │──▶│  CHUNK  │──▶│  EMBED   │──▶ STORE
+ │ scanner  │   │parsers│   │normalizer │   │(content │   │ chunker │   │embeddings│    (SQLite)
+ │   .ts    │   │  /*   │   │   .ts     │   │  hash)  │   │   .ts   │   │/local.ts │
+ └──────────┘   └───────┘   └───────────┘   └─────────┘   └─────────┘   └─────────┘
+```
+
+| Step | File | What happens |
+| --- | --- | --- |
+| **Scan** | [`ingestion/scanner.ts`](src/ingestion/scanner.ts) | Recursively walk a folder, filter to `.txt` / `.md` / `.rtf`, skip anything over 10MB.<br>e.g. 200 files in `notes/` → 187 `FileDescriptor{path,extension,sizeBytes}`, .pdf and one 14MB file dropped.<br>Think of it like going through a filing cabinet and only pulling out the folders you can actually read — anything too big or in a weird format gets left in the drawer. |
+| **Parse** | [`ingestion/parsers/`](src/ingestion/parsers) | Extension-based strategy pattern — RTF gets stripped of control codes, txt/md are read as-is.<br>e.g. `meeting.rtf` (`{\rtf1\ansi ... \par Q3 budget \par}`) → raw string `"Q3 budget"`.<br>Think of it like this: you have a saved note in a `.rtf` file, and parsing it turns it from looking like `{\rtf1\ansi ... \par Q3 budget \par}` into plain text: `"Q3 budget"`. |
+| **Normalize** | [`ingestion/normalizer.ts`](src/ingestion/normalizer.ts) | Clean up line endings/whitespace, compute a `sha256` hash of the content.<br>e.g. `"Q3  budget\r\n\r\n\r\ntargets"` → `{content:"Q3 budget\n\ntargets", contentHash:"a3f9e1..."}`.<br>Think of it like tidying a messy handwritten page — extra spaces and blank lines get smoothed out, then it gets a fingerprint so we can tell later if it ever changes. |
+| **Dedup** | [`ingestion/ingestionEngine.ts`](src/ingestion/ingestionEngine.ts) | Compare hash against what's already stored — unchanged files are skipped, so re-ingestion is cheap and incremental.<br>e.g. `notes.md` hash matches the stored row → `documentExists()` returns true → file skipped.<br>Think of it like checking if you already photocopied this exact page before deciding to copy it again — same fingerprint, skip it. |
+| **Chunk** | [`ingestion/chunker.ts`](src/ingestion/chunker.ts) | Slide a ~900-token window (100-token overlap) across the text so no chunk gets too big for the embedding model and no fact gets cut in half at a boundary.<br>e.g. a 2,400-token doc → 3 `Chunk` objects, each overlapping the previous one's last 100 tokens.<br>Think of it like tearing a long letter into overlapping pages so no sentence gets sliced in half between pages. |
+| **Embed** | [`embeddings/local.ts`](src/embeddings/local.ts) | Each chunk → a 384-dim vector via `all-MiniLM-L6-v2`, running fully on-device.<br>e.g. `"Source: notes\nQ3 budget targets"` → `Float32Array` of 384 numbers.<br>Think of it like turning a sentence into a fingerprint made of numbers that captures its meaning, so similar sentences end up with similar-looking fingerprints. |
+| **Store** | [`vectorstore/sqlite.ts`](src/vectorstore/sqlite.ts) | Persist to SQLite: `documents` (one row per file) + `chunks` (one row per chunk, embedding stored as JSON) + an FTS5 full-text index built alongside it.<br>e.g. chunk + embedding → row in `chunks` (embedding as JSON text) + mirrored row in `chunks_fts`.<br>Think of it like filing that fingerprint and the original text into two cabinets — one for quick meaning-based lookup, one for exact keyword search. |
+
+### 2. Query pipeline — hybrid search + grounded generation
+
+```
+                       ┌──────────────────────┐
+   question ──────────▶│  rewriteQuery()      │  (chat only — rewrites vague
+                       │  query/rewriter.ts   │   follow-ups into standalone Qs)
+                       └──────────┬───────────┘
+                                  ▼
+                       ┌──────────────────────┐
+                       │   hybridSearch()      │
+                       │   query/engine.ts     │
+                       └──────────┬───────────┘
+                     ┌────────────┴────────────┐
+                     ▼                         ▼
+          ┌─────────────────────┐   ┌─────────────────────┐
+          │  Semantic search    │   │  Keyword search      │
+          │  cosine similarity  │   │  SQLite FTS5          │
+          │  over embeddings    │   │  (exact terms, IDs)   │
+          └──────────┬──────────┘   └──────────┬───────────┘
+                     └────────────┬────────────┘
+                                  ▼
+                       dedupe + merge → top-K chunks
+                                  ▼
+                       ┌──────────────────────┐
+                       │  Build numbered       │   [1] File: ... \n content
+                       │  context block        │   [2] File: ... \n content
+                       └──────────┬───────────┘
+                                  ▼
+                       ┌──────────────────────┐
+                       │  LLMProvider.answer() │  Claude / OpenAI / Ollama
+                       │  llm/*.ts             │  streams tokens, cites [1][2]
+                       └──────────┬───────────┘
+                                  ▼
+                         answer + source list
+```
+
+**Why hybrid search?** Semantic (embedding) search is great at "what's conceptually related" but can miss exact strings — a ticket ID like `NN-2725` or an error code. Keyword search (SQLite FTS5) nails exact terms but misses paraphrasing. Running both and merging the results (deduped by file + chunk) gets the best of each — see [`hybridSearch()` in `query/engine.ts`](src/query/engine.ts).
+
+**Why it's grounded, not hallucinated:** the LLM is only ever shown the retrieved chunks (never the whole knowledge base) and is instructed to answer *only* from that context, citing chunk numbers inline. If nothing relevant is retrieved, it says so instead of making something up.
+
+**Pluggability:** `Parser`, `EmbeddingProvider`, `VectorStore`, and `LLMProvider` are all interfaces ([`types/index.ts`](src/types/index.ts)). The pipeline orchestrators (`ingestionEngine.ts`, `query/engine.ts`) only depend on those interfaces — swapping SQLite for LanceDB, or Ollama for Claude, never touches pipeline logic.
+
+---
+
 ## One-time setup
 
 ```bash
@@ -182,8 +252,20 @@ src/
 The knowledge base is stored locally at:
 
 ```
-<current-working-directory>/.myworkjournal/index.db
+~/.myworkjournal/index.db
 ```
+
+regardless of which directory you run `mywj` from, so everything you ingest ends up in one searchable knowledge base. Override the location with the `MYWJ_DB_PATH` environment variable if you want a per-project database instead.
+
+> **Upgrading from an older version?** Prior versions stored the database at `<current-working-directory>/.myworkjournal/index.db`. That old data won't automatically show up under the new global path. Either move it:
+>
+> ```bash
+> mkdir -p ~/.myworkjournal
+> mv ./.myworkjournal/index.db ~/.myworkjournal/index.db
+> mv ./.myworkjournal/captures ~/.myworkjournal/captures  # if you have any notes
+> ```
+>
+> or set `MYWJ_DB_PATH=./.myworkjournal/index.db` to keep the old per-project behavior.
 
 Schema:
 
@@ -201,7 +283,7 @@ Chunks are deleted automatically when their parent document is removed (`ON DELE
 - **Hash-based dedup** — files are re-processed only when their content changes.
 - **Pluggable abstractions** — `Parser`, `EmbeddingProvider`, and `VectorStore` are interfaces. Phase 2 additions (PDF/DOCX parsers, LanceDB) are drop-in implementations with no changes to ingestion or query logic.
 - **No external vector DB** — cosine similarity runs in JS over SQLite rows. Suitable for thousands of chunks; swap to LanceDB when scale demands it.
-- **Per-project database** — the `.myworkjournal/` folder lives next to your knowledge files, not in a global location.
+- **Global database by default** — `~/.myworkjournal/` holds everything you ingest, regardless of the directory you run `mywj` from. Set `MYWJ_DB_PATH` for a per-project database instead.
 - **Fully local embeddings** — no API key or internet connection needed for ingestion after the model is cached.
 
 ---

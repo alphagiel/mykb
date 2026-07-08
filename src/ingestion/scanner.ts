@@ -1,3 +1,9 @@
+// ─────────────────────────────────────────────────────────────────────────
+// INGESTION PIPELINE — STEP 1: SCAN
+// Recursively walks a directory, filters by extension/size, and returns a
+// flat list of files to ingest. Pure filesystem discovery — no parsing yet.
+// Flow: scan → parse → normalize → chunk → embed → store
+// ─────────────────────────────────────────────────────────────────────────
 import * as fs from 'fs';
 import * as path from 'path';
 import { FileDescriptor } from '../types';

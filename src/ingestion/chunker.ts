@@ -1,3 +1,9 @@
+// ─────────────────────────────────────────────────────────────────────────
+// INGESTION PIPELINE — STEP 4: CHUNK
+// Splits normalized text into overlapping windows (~900 tokens, 100 token
+// overlap, approximated at 4 chars/token). Overlap prevents a fact from
+// being cut in half at a chunk boundary and losing retrievability.
+// ─────────────────────────────────────────────────────────────────────────
 import { Chunk } from '../types';
 
 // ~4 chars per token is a reasonable approximation without a tokenizer dependency

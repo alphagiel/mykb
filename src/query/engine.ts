@@ -1,3 +1,16 @@
+// ─────────────────────────────────────────────────────────────────────────
+// QUERY PIPELINE — CORE
+// hybridSearch(): embeds the question, runs semantic (cosine) + keyword
+// (FTS5) search in parallel, dedupes by file+chunk, and returns a merged
+// ranked list — this is the "R" in RAG. The three exported entry points all
+// build on it:
+//   askQuestion  — one-shot CLI `mywj ask`, prints sources to stdout
+//   chatTurn     — interactive CLI `mywj chat`, carries conversation history
+//   apiChat      — same flow for the web UI, returns structured JSON
+// Retrieved chunks are numbered [1][2]... and stitched into a context block
+// that's handed to the LLMProvider, which is told to cite those numbers —
+// this is the "G" (generation), grounded in retrieved context.
+// ─────────────────────────────────────────────────────────────────────────
 import * as path from 'path';
 import { ConversationTurn, EmbeddingProvider, LLMProvider, SearchResult, UsageStats, VectorStore } from '../types';
 import { rewriteQuery } from './rewriter';
@@ -11,7 +24,7 @@ function chunkHeader(c: SearchResult): string {
   return parts.join(' | ');
 }
 
-async function hybridSearch(
+export async function hybridSearch(
   question: string,
   embedder: EmbeddingProvider,
   store: VectorStore,
@@ -74,6 +87,45 @@ export async function askQuestion(
   });
 
   return usage;
+}
+
+export interface ApiChatResult {
+  answer: string | null;
+  sources: Array<{ filePath: string; indices: number[] }>;
+  usage: UsageStats | null;
+  updatedHistory: ConversationTurn[];
+}
+
+// Same retrieval/answer flow as chatTurn, but returns structured data instead of
+// printing to the console — used by the web server.
+export async function apiChat(
+  question: string,
+  embedder: EmbeddingProvider,
+  store: VectorStore,
+  llm: LLMProvider,
+  history: ConversationTurn[] = [],
+  topK = 5,
+): Promise<ApiChatResult> {
+  const searchQuery = history.length ? await rewriteQuery(question, history) : question;
+  const chunks = await hybridSearch(searchQuery, embedder, store, topK);
+
+  if (chunks.length === 0) {
+    return { answer: null, sources: [], usage: null, updatedHistory: history };
+  }
+
+  const context = chunks.map((c, i) => `[${i + 1}] ${chunkHeader(c)}\n${c.content}`).join('\n\n---\n\n');
+  const usage = await llm.answer(question, context, history);
+
+  const fileToIndices = new Map<string, number[]>();
+  chunks.forEach((c, i) => {
+    const existing = fileToIndices.get(c.filePath) ?? [];
+    existing.push(i + 1);
+    fileToIndices.set(c.filePath, existing);
+  });
+  const sources = Array.from(fileToIndices, ([filePath, indices]) => ({ filePath, indices }));
+
+  const updatedHistory = usage?.answerText ? [...history, { question, answer: usage.answerText }] : history;
+  return { answer: usage?.answerText ?? null, sources, usage, updatedHistory };
 }
 
 export async function chatTurn(

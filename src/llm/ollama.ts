@@ -1,3 +1,6 @@
+// LLMProvider: Ollama (local model, default provider). Hand-rolled HTTP
+// streaming client (no SDK dependency) against Ollama's /api/generate —
+// this is what makes the whole pipeline work with zero API key and zero cost.
 import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';

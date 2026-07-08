@@ -1,3 +1,11 @@
+// ─────────────────────────────────────────────────────────────────────────
+// SHARED CONTRACTS
+// The interfaces here (Parser, EmbeddingProvider, VectorStore, LLMProvider)
+// are what make every pipeline stage swappable: ingestionEngine.ts and
+// query/engine.ts only ever depend on these shapes, never on a concrete
+// implementation (SQLite, MiniLM, Claude, etc). New parser/embedding/LLM/
+// vector-store backends plug in without touching pipeline logic.
+// ─────────────────────────────────────────────────────────────────────────
 export interface FileDescriptor {
   path: string;
   extension: string;

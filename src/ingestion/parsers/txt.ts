@@ -1,3 +1,4 @@
+// Parser: .txt — plain read, no transformation needed.
 import * as fs from 'fs';
 import { Parser } from '../../types';
 

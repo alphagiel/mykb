@@ -1,4 +1,13 @@
 #!/usr/bin/env node
+// ─────────────────────────────────────────────────────────────────────────
+// ENTRY POINT — CLI
+// Wires user commands to the ingestion/query pipelines. Two modes:
+//   - argv present  → one-shot commander CLI (`mywj ask "..."`, `mywj ingest .`)
+//   - no argv        → interactive REPL (`mywj` with no args) with its own
+//                       lightweight command parser
+// `serve` boots the local web UI (see server/index.ts) as an alternative
+// front-end over the exact same pipeline code.
+// ─────────────────────────────────────────────────────────────────────────
 import 'dotenv/config';
 import { Command } from 'commander';
 import * as readline from 'readline';
@@ -13,11 +22,36 @@ import { runIngestion } from '../ingestion/ingestionEngine';
 import { askQuestion, chatTurn } from '../query/engine';
 import { resolveProvider } from '../llm';
 import { ConversationTurn } from '../types';
+import { listNotes, createNote, deleteNote } from '../notes';
 
-const DB_PATH = path.join(process.cwd(), '.myworkjournal', 'index.db');
+const DEFAULT_DB_DIR = path.join(process.env.HOME ?? process.env.USERPROFILE ?? process.cwd(), '.myworkjournal');
+const DB_PATH = process.env.MYWJ_DB_PATH ?? path.join(DEFAULT_DB_DIR, 'index.db');
 const CAPTURES_DIR = path.join(path.dirname(DB_PATH), 'captures');
 
+// Versions before 0.4.0 stored the database at ./.myworkjournal relative to cwd.
+// Detect that layout so upgraders get pointed at their old data instead of
+// silently landing on an empty database at the new global path.
+const LEGACY_DB_PATH = path.join(process.cwd(), '.myworkjournal', 'index.db');
+
+function warnIfLegacyDbFound(): void {
+  if (process.env.MYWJ_DB_PATH) return; // explicit override — not an upgrader
+  if (fs.existsSync(DB_PATH)) return;    // already migrated / already using the new path
+  if (!fs.existsSync(LEGACY_DB_PATH)) return;
+
+  console.error(
+    `Found an existing knowledge base at the old location:\n` +
+    `  ${LEGACY_DB_PATH}\n` +
+    `myworkjournal now stores its database at ${DB_PATH} by default.\n\n` +
+    `To migrate:\n` +
+    `  mkdir -p ${DEFAULT_DB_DIR}\n` +
+    `  mv ${LEGACY_DB_PATH} ${DB_PATH}\n` +
+    `  mv ${path.join(process.cwd(), '.myworkjournal', 'captures')} ${CAPTURES_DIR}  # if you have notes\n\n` +
+    `Or set MYWJ_DB_PATH=${LEGACY_DB_PATH} to keep using the old location.\n`
+  );
+}
+
 function dbExists(): boolean {
+  warnIfLegacyDbFound();
   if (!fs.existsSync(DB_PATH)) {
     console.error('No knowledge base found. Run `ingest <path>` first.');
     return false;
@@ -33,6 +67,8 @@ async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Pr
     console.error(`Error: path does not exist: ${absPath}`);
     return;
   }
+
+  warnIfLegacyDbFound();
 
   const exts = extensions.split(',').map(e => e.trim());
   console.log(`Scanning : ${absPath}`);
@@ -52,7 +88,6 @@ async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Pr
 
 async function handleNoteInteractive(rl: readline.Interface): Promise<void> {
   if (!dbExists()) return;
-  fs.mkdirSync(CAPTURES_DIR, { recursive: true });
 
   const title = await new Promise<string>(resolve =>
     rl.question('Title: ', line => resolve(line.trim()))
@@ -79,42 +114,15 @@ async function handleNoteInteractive(rl: readline.Interface): Promise<void> {
   const content = lines.join('\n').trim();
   if (!content) { console.log('Cancelled.'); return; }
 
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const filePath = path.join(CAPTURES_DIR, `${slug}-${ts}.md`);
-  const fileContent = `# ${title}\n\n${content}\n`;
-
-  fs.writeFileSync(filePath, fileContent, 'utf-8');
-
-  const contentHash = createHash('sha256').update(fileContent).digest('hex');
-  const embedder = createLocalEmbeddingProvider();
-  const store = createSQLiteVectorStore(DB_PATH);
-
-  const stat = fs.statSync(filePath);
-  const docId = await store.addDocument(filePath, contentHash, {
-    createdAt:  stat.birthtime,
-    modifiedAt: stat.mtime,
-    sizeBytes:  stat.size,
-  });
-  const embedding = await embedder.embed(`Source: ${slug}\n${title}\n${content}`);
-  await store.addChunk(docId, fileContent.trim(), embedding, 0);
-
-  console.log(`Captured: ${path.basename(filePath)}`);
+  const fileName = await createNote(DB_PATH, CAPTURES_DIR, title, content);
+  console.log(`Captured: ${fileName}`);
 }
 
 async function handleEditNote(rl: readline.Interface): Promise<void> {
   if (!dbExists()) return;
-  if (!fs.existsSync(CAPTURES_DIR)) { console.log('No notes found.'); return; }
 
-  const files = fs.readdirSync(CAPTURES_DIR).filter(f => f.endsWith('.md')).sort();
-  if (files.length === 0) { console.log('No notes found.'); return; }
-
-  const notes = files.map(f => {
-    const fp = path.join(CAPTURES_DIR, f);
-    const firstLine = fs.readFileSync(fp, 'utf-8').split('\n')[0];
-    const title = firstLine.startsWith('#') ? firstLine.replace(/^#+\s*/, '') : f;
-    return { filePath: fp, title };
-  });
+  const notes = listNotes(CAPTURES_DIR);
+  if (notes.length === 0) { console.log('No notes found.'); return; }
 
   notes.forEach((n, i) => console.log(`  ${i + 1}. ${n.title}`));
   console.log();
@@ -127,15 +135,16 @@ async function handleEditNote(rl: readline.Interface): Promise<void> {
   if (isNaN(idx) || idx < 0 || idx >= notes.length) { console.log('Cancelled.'); return; }
 
   const note = notes[idx];
-  const before = fs.readFileSync(note.filePath, 'utf-8');
+  const filePath = path.join(CAPTURES_DIR, note.fileName);
+  const before = fs.readFileSync(filePath, 'utf-8');
   const editor = process.env.EDITOR ?? process.env.VISUAL ?? 'vi';
 
   // Pause readline so the editor can take over stdin/stdout
   rl.pause();
-  spawnSync(editor, [note.filePath], { stdio: 'inherit' });
+  spawnSync(editor, [filePath], { stdio: 'inherit' });
   rl.resume();
 
-  const after = fs.readFileSync(note.filePath, 'utf-8');
+  const after = fs.readFileSync(filePath, 'utf-8');
   if (after === before) { console.log('No changes.'); return; }
 
   const contentHash = createHash('sha256').update(after).digest('hex');
@@ -143,14 +152,14 @@ async function handleEditNote(rl: readline.Interface): Promise<void> {
   const store = createSQLiteVectorStore(DB_PATH);
 
   // Remove old chunks, re-add with updated content
-  await store.deleteDocument(note.filePath);
-  const stat = fs.statSync(note.filePath);
-  const docId = await store.addDocument(note.filePath, contentHash, {
+  await store.deleteDocument(filePath);
+  const stat = fs.statSync(filePath);
+  const docId = await store.addDocument(filePath, contentHash, {
     createdAt:  stat.birthtime,
     modifiedAt: stat.mtime,
     sizeBytes:  stat.size,
   });
-  const slug = path.basename(note.filePath, '.md');
+  const slug = path.basename(filePath, '.md');
   const embedding = await embedder.embed(`Source: ${slug}\n${after}`);
   await store.addChunk(docId, after.trim(), embedding, 0);
 
@@ -159,17 +168,9 @@ async function handleEditNote(rl: readline.Interface): Promise<void> {
 
 async function handleDeleteNote(rl: readline.Interface): Promise<void> {
   if (!dbExists()) return;
-  if (!fs.existsSync(CAPTURES_DIR)) { console.log('No notes found.'); return; }
 
-  const files = fs.readdirSync(CAPTURES_DIR).filter(f => f.endsWith('.md')).sort();
-  if (files.length === 0) { console.log('No notes found.'); return; }
-
-  const notes = files.map(f => {
-    const fp = path.join(CAPTURES_DIR, f);
-    const firstLine = fs.readFileSync(fp, 'utf-8').split('\n')[0];
-    const title = firstLine.startsWith('#') ? firstLine.replace(/^#+\s*/, '') : f;
-    return { filePath: fp, title };
-  });
+  const notes = listNotes(CAPTURES_DIR);
+  if (notes.length === 0) { console.log('No notes found.'); return; }
 
   notes.forEach((n, i) => console.log(`  ${i + 1}. ${n.title}`));
   console.log();
@@ -187,9 +188,7 @@ async function handleDeleteNote(rl: readline.Interface): Promise<void> {
   );
   if (!confirmed) { console.log('Cancelled.'); return; }
 
-  fs.unlinkSync(note.filePath);
-  const store = createSQLiteVectorStore(DB_PATH);
-  await store.deleteDocument(note.filePath);
+  await deleteNote(DB_PATH, CAPTURES_DIR, note.fileName);
   console.log('Deleted.');
 }
 
@@ -559,6 +558,24 @@ program
   .description('Show knowledge base statistics')
   .action(async () => {
     await handleStats();
+  });
+
+program
+  .command('serve')
+  .description('Start a local web UI for chatting with and managing the knowledge base')
+  .option('-p, --port <n>', 'Port to listen on', '3131')
+  .option('-k, --top-k <n>', 'Number of source chunks to retrieve per turn', '5')
+  .action(async (options: { port: string; topK: string }) => {
+    if (!dbExists()) return;
+    const { startServer } = await import('../server');
+    const port = parseInt(options.port, 10);
+    try {
+      await startServer({ port, dbPath: DB_PATH, capturesDir: CAPTURES_DIR, topK: parseInt(options.topK, 10) });
+    } catch (err) {
+      console.error('Failed to start server:', (err as Error).message);
+      return;
+    }
+    console.log(`myworkjournal running at http://localhost:${port}`);
   });
 
 if (process.argv.length <= 2) {

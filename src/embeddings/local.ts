@@ -1,3 +1,10 @@
+// ─────────────────────────────────────────────────────────────────────────
+// INGESTION PIPELINE — STEP 5: EMBED
+// Turns a chunk of text into a 384-dim vector using a local sentence-
+// transformer model (all-MiniLM-L6-v2 via @xenova/transformers, runs fully
+// on-device — no API key, no data leaves the machine). Same embed() call is
+// reused at query time to vectorize the user's question for similarity search.
+// ─────────────────────────────────────────────────────────────────────────
 import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';

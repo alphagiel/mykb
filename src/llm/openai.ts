@@ -1,3 +1,5 @@
+// LLMProvider: OpenAI (gpt-4o-mini). Same streaming/citation contract as
+// the other providers — swapping providers never touches query/engine.ts.
 import OpenAI from 'openai';
 import { ConversationTurn, LLMProvider, UsageStats } from '../types';
 

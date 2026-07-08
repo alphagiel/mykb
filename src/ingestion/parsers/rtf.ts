@@ -1,3 +1,5 @@
+// Parser: .rtf — strips RTF control codes down to plain text with a small
+// regex-based decoder, avoiding an extra dependency for a simple format.
 import * as fs from 'fs';
 import { Parser } from '../../types';
 

@@ -1,3 +1,11 @@
+// ─────────────────────────────────────────────────────────────────────────
+// INGESTION PIPELINE — ORCHESTRATOR
+// Wires together every ingestion step in order:
+//   scan → parse → normalize → dedup (content hash) → chunk → embed → store
+// This is the file `mywj ingest <path>` actually calls. Content-hash dedup
+// means re-running ingestion on the same folder is cheap — only new or
+// changed files get re-embedded.
+// ─────────────────────────────────────────────────────────────────────────
 import * as fs from 'fs';
 import * as path from 'path';
 import { EmbeddingProvider, FileMetadata, VectorStore } from '../types';

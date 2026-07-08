@@ -1,3 +1,5 @@
+// LLMProvider: Claude (Anthropic). Streams tokens to stdout as they arrive
+// and reports usage (input/output token counts) once the stream completes.
 import Anthropic from '@anthropic-ai/sdk';
 import { ConversationTurn, LLMProvider, UsageStats } from '../types';
 

@@ -1,3 +1,5 @@
+// Parser: .md — plain read; markdown syntax is left as-is (it's readable
+// text either way, and headers/lists give the LLM useful structure).
 import * as fs from 'fs';
 import { Parser } from '../../types';
 
