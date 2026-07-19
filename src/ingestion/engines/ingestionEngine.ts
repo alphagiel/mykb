@@ -8,11 +8,11 @@
 // ─────────────────────────────────────────────────────────────────────────
 import * as fs from 'fs';
 import * as path from 'path';
-import { EmbeddingProvider, FileMetadata, VectorStore } from '../types';
-import { ParserRegistry } from './parsers';
-import { scan, ScanOptions } from './scanner';
-import { normalize } from './normalizer';
-import { chunkDocument } from './chunker';
+import { EmbeddingProvider, FileMetadata, VectorStore } from '../../types';
+import { ParserRegistry } from '../parsers';
+import { scan, ScanOptions } from '../scanner';
+import { normalize } from '../normalizer';
+import { chunkDocument } from '../chunker';
 
 export interface IngestionResult {
   total: number;

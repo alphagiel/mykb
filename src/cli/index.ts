@@ -18,7 +18,8 @@ import { createHash } from 'crypto';
 import { createLocalEmbeddingProvider } from '../embeddings/local';
 import { createSQLiteVectorStore } from '../vectorstore/sqlite';
 import { ParserRegistry } from '../ingestion/parsers';
-import { runIngestion } from '../ingestion/ingestionEngine';
+import { runIngestion } from '../ingestion/engines/ingestionEngine';
+import { runUrlIngestion } from '../ingestion/engines/urlIngestionEngine';
 import { askQuestion, chatTurn } from '../query/engine';
 import { resolveProvider } from '../llm';
 import { ConversationTurn } from '../types';
@@ -84,6 +85,26 @@ async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Pr
   console.log(`  Ingested: ${result.ingested}`);
   console.log(`  Skipped : ${result.skipped}`);
   console.log(`  Failed  : ${result.failed}`);
+}
+
+async function handleIngestUrl(url: string): Promise<void> {
+  warnIfLegacyDbFound();
+  console.log(`Fetching : ${url}`);
+  console.log(`Database : ${DB_PATH}\n`);
+
+  const embedder = createLocalEmbeddingProvider();
+  const store = createSQLiteVectorStore(DB_PATH);
+
+  try {
+    const result = await runUrlIngestion(url, embedder, store);
+    if (result.skipped) {
+      console.log(`Skipped (unchanged): ${result.title}`);
+    } else {
+      console.log(`Ingested: ${result.title} (${result.chunkCount} chunks)`);
+    }
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`);
+  }
 }
 
 async function handleNoteInteractive(rl: readline.Interface): Promise<void> {
@@ -367,6 +388,7 @@ function printHelp(): void {
   edit note                           Edit a note in $EDITOR and re-index it
   delete note                         Delete a note (shows list to pick from)
   ingest <path> [-e .txt,.md,.rtf]   Ingest files from a directory into the knowledge base
+  ingest-url <url>                    Ingest a web page into the knowledge base
   ask <question> [-k N]               Ask a question (default -k 5; higher = more context, more tokens)
   stats                               Show knowledge base statistics
   help                                Show this help message
@@ -435,6 +457,12 @@ async function runInteractive(): Promise<void> {
           const eFlag = rest.indexOf('-e');
           const extensions = eFlag !== -1 && rest[eFlag + 1] ? rest[eFlag + 1] : '.txt,.md,.rtf';
           await handleIngest(inputPath, extensions);
+          break;
+        }
+        case 'ingest-url': {
+          const url = rest[0];
+          if (!url) { console.error('Usage: ingest-url <url>'); break; }
+          await handleIngestUrl(url);
           break;
         }
         case 'note': {
@@ -535,6 +563,13 @@ program
   .option('-e, --extensions <exts>', 'Comma-separated file extensions to include', '.txt,.md,.rtf')
   .action(async (inputPath: string, options: { extensions: string }) => {
     await handleIngest(inputPath, options.extensions);
+  });
+
+program
+  .command('ingest-url <url>')
+  .description('Ingest a web page into the knowledge base')
+  .action(async (url: string) => {
+    await handleIngestUrl(url);
   });
 
 program

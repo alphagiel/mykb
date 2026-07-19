@@ -12,7 +12,7 @@ import { createLocalEmbeddingProvider } from '../embeddings/local';
 import { createSQLiteVectorStore } from '../vectorstore/sqlite';
 import { resolveProvider } from '../llm';
 import { apiChat } from '../query/engine';
-import { runIngestion } from '../ingestion/ingestionEngine';
+import { runIngestion } from '../ingestion/engines/ingestionEngine';
 import { ParserRegistry } from '../ingestion/parsers';
 import { listNotes, createNote, deleteNote } from '../notes';
 import { ConversationTurn } from '../types';
