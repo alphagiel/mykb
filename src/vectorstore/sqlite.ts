@@ -13,7 +13,7 @@
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
-import { FileMetadata, VectorStore, SearchResult } from '../types';
+import { DocumentRef, FileMetadata, VectorStore, SearchResult } from '../types';
 
 export function createSQLiteVectorStore(dbPath: string): VectorStore {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -196,6 +196,20 @@ export function createSQLiteVectorStore(dbPath: string): VectorStore {
         // Malformed FTS query — fall back gracefully
         return [];
       }
+    },
+
+    async findDocumentsByPathPattern(pattern: string): Promise<DocumentRef[]> {
+      const rows = db
+        .prepare('SELECT id, file_path FROM documents WHERE file_path LIKE ?')
+        .all(pattern) as Array<{ id: number; file_path: string }>;
+      return rows.map(r => ({ id: r.id, filePath: r.file_path }));
+    },
+
+    async getChunkCount(documentId: number): Promise<number> {
+      const { count } = db
+        .prepare('SELECT COUNT(*) as count FROM chunks WHERE document_id = ?')
+        .get(documentId) as { count: number };
+      return count;
     },
 
     async getStats(): Promise<{ documentCount: number; chunkCount: number }> {

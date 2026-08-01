@@ -8,11 +8,11 @@
 // ─────────────────────────────────────────────────────────────────────────
 import * as fs from 'fs';
 import * as path from 'path';
-import { EmbeddingProvider, FileMetadata, VectorStore } from '../../types';
+import { DocumentRef, EmbeddingProvider, FileMetadata, VectorStore } from '../../types';
 import { ParserRegistry } from '../parsers';
 import { scan, ScanOptions } from '../scanner';
 import { normalize } from '../normalizer';
-import { chunkDocument } from '../chunker';
+import { writeDocument } from '../documentWriter';
 
 export interface IngestionResult {
   total: number;
@@ -26,7 +26,8 @@ export async function runIngestion(
   registry: ParserRegistry,
   embedder: EmbeddingProvider,
   store: VectorStore,
-  scanOptions: ScanOptions = {}
+  scanOptions: ScanOptions = {},
+  onRelatedDocumentFound?: (match: DocumentRef, filePath: string) => Promise<boolean>
 ): Promise<IngestionResult> {
   const files = scan(dirPath, scanOptions);
   const result: IngestionResult = { total: files.length, ingested: 0, skipped: 0, failed: 0 };
@@ -47,26 +48,26 @@ export async function runIngestion(
         continue;
       }
 
-      // Remove stale version (if any) before re-inserting
-      await store.deleteDocument(file.path);
-
       const stat = fs.statSync(file.path);
       const meta: FileMetadata = {
         createdAt:  stat.birthtime,
         modifiedAt: stat.mtime,
         sizeBytes:  stat.size,
       };
-      const documentId = await store.addDocument(file.path, doc.metadata.contentHash, meta);
-      const chunks = chunkDocument(doc.content, documentId);
       const basename = path.basename(file.path, path.extname(file.path));
 
-      for (const chunk of chunks) {
-        const textToEmbed = `Source: ${basename}\n${chunk.content}`;
-        const embedding = await embedder.embed(textToEmbed);
-        await store.addChunk(documentId, chunk.content, embedding, chunk.chunkIndex);
-      }
+      const written = await writeDocument(
+        { filePath: file.path, title: basename, content: doc.content, contentHash: doc.metadata.contentHash, meta },
+        embedder,
+        store,
+        onRelatedDocumentFound ? match => onRelatedDocumentFound(match, file.path) : undefined
+      );
 
-      process.stdout.write(`  [ok] ${file.path}\n`);
+      process.stdout.write(
+        written.merged
+          ? `  [merged into ${path.basename(written.mergedInto!)}] ${file.path}\n`
+          : `  [ok] ${file.path}\n`
+      );
       result.ingested++;
     } catch (err) {
       process.stderr.write(`  [fail] ${file.path}: ${(err as Error).message}\n`);

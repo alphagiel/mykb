@@ -5,34 +5,37 @@
 // The URL itself plays the role a file path plays in the file pipeline, so
 // VectorStore, chunker.ts, and normalize() are reused unchanged.
 // ─────────────────────────────────────────────────────────────────────────
-import { EmbeddingProvider, FileMetadata, VectorStore } from '../../types';
+import { DocumentRef, EmbeddingProvider, FileMetadata, VectorStore } from '../../types';
 import { fetchUrl } from '../web/fetcher';
 import { extract } from '../web/extractor';
 import { normalize } from '../normalizer';
-import { chunkDocument } from '../chunker';
+import { writeDocument } from '../documentWriter';
 
 export interface UrlIngestionResult {
   ingested: boolean;
   skipped: boolean;
   title?: string;
   chunkCount?: number;
+  merged?: boolean;
+  mergedInto?: string;
 }
 
 export async function runUrlIngestion(
   url: string,
   embedder: EmbeddingProvider,
-  store: VectorStore
+  store: VectorStore,
+  titleOverride?: string,
+  onRelatedDocumentFound?: (match: DocumentRef) => Promise<boolean>
 ): Promise<UrlIngestionResult> {
   const page = await fetchUrl(url);
-  const { title, textContent } = extract(page);
-  const doc = normalize(textContent, page.finalUrl);
+  const extracted = extract(page);
+  const title = titleOverride || extracted.title;
+  const doc = normalize(extracted.textContent, page.finalUrl);
   const finalUrl = page.finalUrl;
 
   if (await store.documentExists(finalUrl, doc.metadata.contentHash)) {
     return { ingested: false, skipped: true, title };
   }
-
-  await store.deleteDocument(finalUrl);
 
   const now = new Date();
   const meta: FileMetadata = {
@@ -40,14 +43,13 @@ export async function runUrlIngestion(
     modifiedAt: now,
     sizeBytes: Buffer.byteLength(doc.content, 'utf-8'),
   };
-  const documentId = await store.addDocument(finalUrl, doc.metadata.contentHash, meta);
-  const chunks = chunkDocument(doc.content, documentId);
 
-  for (const chunk of chunks) {
-    const textToEmbed = `Source: ${title}\n${chunk.content}`;
-    const embedding = await embedder.embed(textToEmbed);
-    await store.addChunk(documentId, chunk.content, embedding, chunk.chunkIndex);
-  }
+  const result = await writeDocument(
+    { filePath: finalUrl, title, content: doc.content, contentHash: doc.metadata.contentHash, meta },
+    embedder,
+    store,
+    onRelatedDocumentFound
+  );
 
-  return { ingested: true, skipped: false, title, chunkCount: chunks.length };
+  return { ingested: true, skipped: false, title, chunkCount: result.chunkCount, merged: result.merged, mergedInto: result.mergedInto };
 }

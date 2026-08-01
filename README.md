@@ -6,6 +6,10 @@ Point it at your tickets, notes, or exports and ask natural language questions o
 
 ## What's new
 
+**0.5.3** — 🔗 Related-document detection: every ingest command (`ingest`, `ingest-url`, `ingest-image`) now spots when new content shares a ticket ID with something already in the KB and asks whether to merge it in, instead of always creating a separate fragmented document.
+
+**0.5.2** — 📸 Screenshot ingestion: `mywj ingest-image <path>` transcribes a screenshot (Claude or OpenAI vision) and indexes the text — handy for auth-gated pages (Jira, Confluence) you can't scrape directly. Requires `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
+
 **0.5.1** — 🌐 URL ingestion: `mywj ingest-url <url>` pulls in web pages and Google Docs (not just local files), with automatic readable-content extraction and Google Docs export support.
 
 ```bash
@@ -26,6 +30,16 @@ mywj ingest ./path/to/notes
 
 # Ingest a web page or Google Doc
 mywj ingest-url https://example.com/some-article
+
+# Ingest a screenshot (needs ANTHROPIC_API_KEY or OPENAI_API_KEY)
+mywj ingest-image ./screenshots/jira-ticket.png
+# Title (leave blank to use the filename): NN-2725 - login redirect bug
+#
+# Image    : ./screenshots/jira-ticket.png
+# Provider : anthropic
+# Database : ~/.myworkjournal/journal.db
+#
+# Ingested: NN-2725 - login redirect bug (2 chunks)
 
 # Interactive chat with conversation history
 mywj chat
@@ -202,6 +216,7 @@ mywj ingest ./path/to/your/notes
 - Recursively scans for `.txt`, `.md`, and `.rtf` files
 - Downloads the embedding model on first run (~25 MB, cached after that)
 - Re-running is safe — unchanged files are skipped automatically
+- If a file's title contains a ticket ID (e.g. `NN-2988`) that matches an existing document, you're asked whether to merge it in rather than create a new fragmented document (see [Related-document detection](#related-document-detection) below)
 - The knowledge base is stored at `.myworkjournal/index.db` in the current directory
 
 Restrict to specific extensions:
@@ -216,11 +231,45 @@ mywj ingest ./notes --extensions .txt,.md
 
 ```bash
 mywj ingest-url https://example.com/some-article
+# or just: mywj ingest-url  (prompts for title, then the url)
 ```
+
+Prompts for a title first (leave blank to auto-detect from the page) — if you didn't pass a URL as an argument, it then prompts for that too.
 
 - Extracts the readable article body (via `jsdom` + `@mozilla/readability`), stripping nav/ads/boilerplate
 - Follows redirects (up to 5), rejects non-HTML responses and responses over 10MB
 - Re-running on the same URL is safe — unchanged pages are skipped automatically, same as file ingestion
+
+---
+
+### Ingest a screenshot
+
+```bash
+mywj ingest-image ./screenshots/jira-ticket.png
+# or just: mywj ingest-image  (prompts for title, then the image path)
+```
+
+Prompts for a title first (leave blank to use the filename) — if you didn't pass a path as an argument, it then prompts for that too.
+
+- Transcribes the image via Claude or OpenAI vision (`.png`, `.jpg`/`.jpeg`, `.webp`, `.gif`) — requires `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
+- Useful for auth-gated pages (Jira, Confluence, internal tools) that can't be scraped directly with `ingest-url`
+- Dedup hashes the raw image bytes, so re-running on an unchanged screenshot is free — no repeat vision-API call
+
+---
+
+### Related-document detection
+
+Every ingest command (`ingest`, `ingest-url`, `ingest-image`) checks whether the new content's title contains a ticket-ID-like token (e.g. `NN-2988`) that already appears in an existing document's path. If it finds one:
+
+```
+This looks related to an existing file: NN-2988.md
+Add this as an update to that document? [y/N]:
+```
+
+- **Yes** — the new content is appended as additional chunks on the *existing* document, so it shows up as one grouped source in citations instead of two disconnected ones (e.g. a ticket export + a later screenshot of that same ticket)
+- **No** — ingested as its own separate document, same as before
+
+This exists because a single topic/ticket can easily fragment across formats over time (an `.rtf` export, then later a `.md` note, then a screenshot) — each landing as an unrelated document makes retrieval less coherent, since a broad query can only surface a limited number of top-ranked chunks and a single-chunk screenshot competes poorly against a chunkier full ticket file. Merging keeps them as one source.
 
 ---
 
@@ -279,9 +328,12 @@ src/
 │   ├── scanner.ts             recursive dir walk with extension filtering
 │   ├── normalizer.ts          whitespace normalisation + sha256 content hash
 │   ├── chunker.ts             sliding window chunker (~900 tokens, 100 overlap)
+│   ├── relatedDocument.ts     ticket-ID extraction + existing-document lookup
+│   ├── documentWriter.ts      shared chunk → embed → store tail (handles the merge decision)
 │   ├── engines/
-│   │   ├── ingestionEngine.ts     orchestrates scan → parse → normalise → chunk → embed → store
-│   │   └── urlIngestionEngine.ts  orchestrates fetch → extract → normalise → chunk → embed → store
+│   │   ├── ingestionEngine.ts      orchestrates scan → parse → normalise → chunk → embed → store
+│   │   ├── urlIngestionEngine.ts   orchestrates fetch → extract → normalise → chunk → embed → store
+│   │   └── imageIngestionEngine.ts orchestrates transcribe → normalise → chunk → embed → store
 │   ├── parsers/
 │   │   ├── index.ts           ParserRegistry (strategy pattern)
 │   │   ├── txt.ts
@@ -290,6 +342,11 @@ src/
 │   └── web/
 │       ├── fetcher.ts         fetch w/ timeout, redirect + size caps, content-type check
 │       └── extractor.ts       jsdom + @mozilla/readability article extraction
+├── llm/
+│   ├── index.ts                resolveProvider() / resolveVisionProvider() — Claude → OpenAI → Ollama
+│   ├── anthropic.ts            Claude — chat + image transcription
+│   ├── openai.ts                OpenAI — chat + image transcription
+│   └── ollama.ts                Ollama — chat only (no local vision model by default)
 ├── embeddings/
 │   └── local.ts               local embeddings via @xenova/transformers (all-MiniLM-L6-v2)
 ├── vectorstore/
@@ -348,6 +405,6 @@ Chunks are deleted automatically when their parent document is removed (`ON DELE
 | 1 ✅ | `.txt`, `.md`, `.rtf` — local embeddings — SQLite — hybrid FTS + semantic search — Claude streaming synthesis |
 | 2 ✅ | Quick capture (`mywj note`) — edit + delete notes — Esc to cancel — interactive chat |
 | 3 ✅ | URL ingestion (`mywj ingest-url <url>`) |
-| 4 | Screenshot/image ingestion (`mywj ingest-image`) — vision-LLM transcription for auth-gated pages (Jira, Confluence) that can't be scraped directly |
+| 4 ✅ | Screenshot/image ingestion (`mywj ingest-image`) — vision-LLM transcription for auth-gated pages (Jira, Confluence) that can't be scraped directly |
 | 5 | PDF parser |
 | 6 | git log ingestion (`mywj ingest-git`) |

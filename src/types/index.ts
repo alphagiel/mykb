@@ -64,6 +64,13 @@ export interface ConversationTurn {
 
 export interface LLMProvider {
   answer(question: string, context: string, history?: ConversationTurn[], signal?: AbortSignal): Promise<UsageStats | null>;
+  /** Transcribes an image to text. Only implemented by vision-capable providers (Claude, OpenAI). */
+  transcribeImage?(imageBase64: string, mediaType: string): Promise<string>;
+}
+
+export interface DocumentRef {
+  id: number;
+  filePath: string;
 }
 
 export interface VectorStore {
@@ -74,4 +81,8 @@ export interface VectorStore {
   similaritySearch(queryEmbedding: number[], k: number): Promise<SearchResult[]>;
   ftsSearch(query: string): Promise<SearchResult[]>;
   getStats(): Promise<{ documentCount: number; chunkCount: number }>;
+  /** Finds documents whose file_path matches a SQL LIKE pattern (e.g. `%NN-2988%`). */
+  findDocumentsByPathPattern(pattern: string): Promise<DocumentRef[]>;
+  /** Number of chunks currently stored for a document — used to continue chunkIndex when appending. */
+  getChunkCount(documentId: number): Promise<number>;
 }

@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { ConversationTurn, LLMProvider, UsageStats } from '../types';
 
 const MODEL = 'claude-opus-4-6';
+const TRANSCRIBE_PROMPT = `Transcribe all text visible in this image verbatim, preserving structure (headings, lists, tables) as plain text. If it's a screenshot of a ticket, doc, or UI, include labels and field names. Output only the transcribed content, no commentary.`;
 const SYSTEM = `You are a helpful assistant answering questions from a private knowledge base.
 Use only the provided context. If the answer is not there, say so clearly. Be concise.
 Each context chunk is prefixed with a number like [1], [2], etc. Cite the relevant source numbers inline in your answer using that notation.`;
@@ -42,6 +43,22 @@ export function createAnthropicProvider(apiKey: string): LLMProvider {
         }
         throw err;
       }
+    },
+
+    async transcribeImage(imageBase64: string, mediaType: string): Promise<string> {
+      const message = await client.messages.create({
+        model: MODEL,
+        max_tokens: 4096,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif', data: imageBase64 } },
+            { type: 'text', text: TRANSCRIBE_PROMPT },
+          ],
+        }],
+      });
+      const textBlock = message.content.find((block): block is Anthropic.TextBlock => block.type === 'text');
+      return textBlock?.text ?? '';
     },
   };
 }

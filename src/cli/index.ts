@@ -20,9 +20,10 @@ import { createSQLiteVectorStore } from '../vectorstore/sqlite';
 import { ParserRegistry } from '../ingestion/parsers';
 import { runIngestion } from '../ingestion/engines/ingestionEngine';
 import { runUrlIngestion } from '../ingestion/engines/urlIngestionEngine';
+import { runImageIngestion } from '../ingestion/engines/imageIngestionEngine';
 import { askQuestion, chatTurn } from '../query/engine';
-import { resolveProvider } from '../llm';
-import { ConversationTurn } from '../types';
+import { resolveProvider, resolveVisionProvider } from '../llm';
+import { ConversationTurn, DocumentRef } from '../types';
 import { listNotes, createNote, deleteNote } from '../notes';
 
 const DEFAULT_DB_DIR = path.join(process.env.HOME ?? process.env.USERPROFILE ?? process.cwd(), '.myworkjournal');
@@ -60,9 +61,29 @@ function dbExists(): boolean {
   return true;
 }
 
+function promptLine(rl: readline.Interface, question: string): Promise<string> {
+  return new Promise(resolve => rl.question(question, line => resolve(line.trim())));
+}
+
+// Un-escapes a path pasted/dragged from a shell context (e.g. Finder drag-and-drop
+// produces `Screenshot\ 2026.png`, terminals sometimes wrap in quotes) — our own
+// readline prompt never goes through shell parsing, so this never happens for free.
+function cleanFilePath(raw: string): string {
+  const trimmed = raw.trim();
+  const quoted = trimmed.match(/^"(.*)"$|^'(.*)'$/);
+  if (quoted) return quoted[1] ?? quoted[2];
+  return trimmed.replace(/\\(.)/g, '$1');
+}
+
 // ── Shared command handlers ───────────────────────────────────────────────────
 
-async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Promise<void> {
+async function confirmMerge(rl: readline.Interface, match: DocumentRef): Promise<boolean> {
+  console.log(`\nThis looks related to an existing file: ${path.basename(match.filePath)}`);
+  const answer = await promptLine(rl, 'Add this as an update to that document? [y/N]: ');
+  return answer.toLowerCase() === 'y';
+}
+
+async function handleIngest(rl: readline.Interface, inputPath: string, extensions = '.txt,.md,.rtf'): Promise<void> {
   const absPath = path.resolve(inputPath);
   if (!fs.existsSync(absPath)) {
     console.error(`Error: path does not exist: ${absPath}`);
@@ -78,7 +99,7 @@ async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Pr
   const registry = new ParserRegistry();
   const embedder = createLocalEmbeddingProvider();
   const store = createSQLiteVectorStore(DB_PATH);
-  const result = await runIngestion(absPath, registry, embedder, store, { extensions: exts });
+  const result = await runIngestion(absPath, registry, embedder, store, { extensions: exts }, match => confirmMerge(rl, match));
 
   console.log(`\nDone.`);
   console.log(`  Total   : ${result.total}`);
@@ -87,18 +108,62 @@ async function handleIngest(inputPath: string, extensions = '.txt,.md,.rtf'): Pr
   console.log(`  Failed  : ${result.failed}`);
 }
 
-async function handleIngestUrl(url: string): Promise<void> {
+async function handleIngestUrl(rl: readline.Interface, urlArg?: string): Promise<void> {
   warnIfLegacyDbFound();
-  console.log(`Fetching : ${url}`);
+
+  const title = await promptLine(rl, 'Title (leave blank to auto-detect from the page): ');
+  const url = urlArg ?? await promptLine(rl, 'URL: ');
+  if (!url) { console.log('Cancelled.'); return; }
+
+  console.log(`\nFetching : ${url}`);
   console.log(`Database : ${DB_PATH}\n`);
 
   const embedder = createLocalEmbeddingProvider();
   const store = createSQLiteVectorStore(DB_PATH);
 
   try {
-    const result = await runUrlIngestion(url, embedder, store);
+    const result = await runUrlIngestion(url, embedder, store, title || undefined, match => confirmMerge(rl, match));
     if (result.skipped) {
       console.log(`Skipped (unchanged): ${result.title}`);
+    } else if (result.merged) {
+      console.log(`Ingested: ${result.title} (${result.chunkCount} chunks) — merged into ${path.basename(result.mergedInto!)}`);
+    } else {
+      console.log(`Ingested: ${result.title} (${result.chunkCount} chunks)`);
+    }
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`);
+  }
+}
+
+async function handleIngestImage(rl: readline.Interface, imagePathArg?: string): Promise<void> {
+  warnIfLegacyDbFound();
+
+  const title = await promptLine(rl, 'Title (leave blank to use the filename): ');
+  const rawPath = imagePathArg ?? await promptLine(rl, 'Image path: ');
+  if (!rawPath) { console.log('Cancelled.'); return; }
+  const imagePath = cleanFilePath(rawPath);
+
+  let visionProvider: Awaited<ReturnType<typeof resolveVisionProvider>>;
+  try {
+    visionProvider = await resolveVisionProvider();
+  } catch (err) {
+    console.error((err as Error).message);
+    return;
+  }
+
+  console.log(`\nImage    : ${imagePath}`);
+  console.log(`Provider : ${visionProvider.name}`);
+  console.log(`Database : ${DB_PATH}\n`);
+
+  const embedder = createLocalEmbeddingProvider();
+  const store = createSQLiteVectorStore(DB_PATH);
+
+  try {
+    const result = await runImageIngestion(imagePath, visionProvider.provider, embedder, store, title || undefined, match => confirmMerge(rl, match));
+    if (result.skipped) {
+      console.log(`Skipped (unchanged): ${result.title}`);
+    } else if (result.merged) {
+      console.log(`Ingested: ${result.title} (${result.chunkCount} chunks) — merged into ${path.basename(result.mergedInto!)}`);
     } else {
       console.log(`Ingested: ${result.title} (${result.chunkCount} chunks)`);
     }
@@ -388,7 +453,8 @@ function printHelp(): void {
   edit note                           Edit a note in $EDITOR and re-index it
   delete note                         Delete a note (shows list to pick from)
   ingest <path> [-e .txt,.md,.rtf]   Ingest files from a directory into the knowledge base
-  ingest-url <url>                    Ingest a web page into the knowledge base
+  ingest-url [url]                     Ingest a web page (prompts for title, and url if omitted)
+  ingest-image [path]                  Ingest a screenshot/image (prompts for title, and path if omitted; needs ANTHROPIC_API_KEY or OPENAI_API_KEY)
   ask <question> [-k N]               Ask a question (default -k 5; higher = more context, more tokens)
   stats                               Show knowledge base statistics
   help                                Show this help message
@@ -456,13 +522,15 @@ async function runInteractive(): Promise<void> {
           if (!inputPath) { console.error('Usage: ingest <path> [-e .txt,.md,.rtf]'); break; }
           const eFlag = rest.indexOf('-e');
           const extensions = eFlag !== -1 && rest[eFlag + 1] ? rest[eFlag + 1] : '.txt,.md,.rtf';
-          await handleIngest(inputPath, extensions);
+          await handleIngest(rl, inputPath, extensions);
           break;
         }
         case 'ingest-url': {
-          const url = rest[0];
-          if (!url) { console.error('Usage: ingest-url <url>'); break; }
-          await handleIngestUrl(url);
+          await handleIngestUrl(rl, rest[0]);
+          break;
+        }
+        case 'ingest-image': {
+          await handleIngestImage(rl, rest[0]);
           break;
         }
         case 'note': {
@@ -562,14 +630,27 @@ program
   .description('Ingest files from a directory into the knowledge base')
   .option('-e, --extensions <exts>', 'Comma-separated file extensions to include', '.txt,.md,.rtf')
   .action(async (inputPath: string, options: { extensions: string }) => {
-    await handleIngest(inputPath, options.extensions);
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await handleIngest(rl, inputPath, options.extensions);
+    rl.close();
   });
 
 program
-  .command('ingest-url <url>')
-  .description('Ingest a web page into the knowledge base')
-  .action(async (url: string) => {
-    await handleIngestUrl(url);
+  .command('ingest-url [url]')
+  .description('Ingest a web page into the knowledge base (prompts for title, and url if omitted)')
+  .action(async (url?: string) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await handleIngestUrl(rl, url);
+    rl.close();
+  });
+
+program
+  .command('ingest-image [path]')
+  .description('Ingest a screenshot/image into the knowledge base (transcribed via Claude or OpenAI vision; prompts for title, and path if omitted)')
+  .action(async (imagePath?: string) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await handleIngestImage(rl, imagePath);
+    rl.close();
   });
 
 program
