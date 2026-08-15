@@ -6,6 +6,16 @@ Point it at your tickets, notes, or exports and ask natural language questions o
 
 ## What's new
 
+**0.5.4** — 🖥️ Web UI: `mywj serve` starts a local web interface (default `http://localhost:3131`) with Chat, Notes, and Ingest tabs — the same knowledge base and pipeline as the CLI, now usable without a terminal.
+
+<table>
+<tr>
+<td width="33%"><img src="docs/screenshots/chat.png" alt="Chat tab" /></td>
+<td width="33%"><img src="docs/screenshots/notes.png" alt="Notes tab" /></td>
+<td width="33%"><img src="docs/screenshots/ingest.png" alt="Ingest tab" /></td>
+</tr>
+</table>
+
 **0.5.3** — 🔗 Related-document detection: every ingest command (`ingest`, `ingest-url`, `ingest-image`) now spots when new content shares a ticket ID with something already in the KB and asks whether to merge it in, instead of always creating a separate fragmented document.
 
 **0.5.2** — 📸 Screenshot ingestion: `mywj ingest-image <path>` transcribes a screenshot (Claude or OpenAI vision) and indexes the text — handy for auth-gated pages (Jira, Confluence) you can't scrape directly. Requires `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.

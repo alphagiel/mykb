@@ -95,6 +95,7 @@ export const PAGE_HTML = `<!doctype html>
   .card-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .card .title { font-size: 14px; font-weight: 500; }
   .card .meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--muted); margin: 4px 0 10px; }
   input[type=text], textarea {
     width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
     color: var(--text); padding: 10px 12px; font-size: 14px; font-family: inherit; margin-bottom: 10px;
@@ -141,6 +142,7 @@ export const PAGE_HTML = `<!doctype html>
         <button class="primary" id="note-save">Save note</button>
         <div id="note-status"></div>
       </div>
+      <h3 class="section-title">Quick notes you saved</h3>
       <div id="notes-list"></div>
     </div>
   </section>
