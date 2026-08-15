@@ -1,7 +1,11 @@
 {
   "name": "myworkjournal",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "A searchable work journal powered by local RAG",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alphagiel/mykb.git"
+  },
   "main": "dist/cli/index.js",
   "bin": {
     "mywj": "dist/cli/index.js"
